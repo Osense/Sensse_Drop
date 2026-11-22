@@ -8,7 +8,8 @@ import { Wordmark } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { hwpToPdf, preloadConverter } from "@/lib/convert";
-import { extOf, formatSize } from "@/lib/format";
+import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
+import { FileNameInput } from "@/components/file-name-input";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,6 +22,7 @@ const MAX_MB = 20;
 type Item = {
   key: string;
   file: File;
+  label: string;
   status: "waiting" | "converting" | "done" | "error";
   note?: string;
   error?: string;
@@ -28,7 +30,7 @@ type Item = {
   url?: string;
 };
 
-const pdfName = (name: string) => name.replace(/\.(hwpx?|HWPX?)$/, "") + ".pdf";
+const pdfName = (it: { label: string; file: File }) => displayName(it.label, it.file.name, "pdf");
 
 export function PdfOnlyView() {
   const [items, setItems] = React.useState<Item[]>([]);
@@ -61,7 +63,7 @@ export function PdfOnlyView() {
         setNotice(`한 번에 ${MAX_FILES}개까지 바꿀 수 있어요.`);
         break;
       }
-      next.push({ key: `${file.name}-${file.size}-${Math.random()}`, file, status: "waiting" });
+      next.push({ key: `${file.name}-${file.size}-${Math.random()}`, file, label: baseOf(file.name), status: "waiting" });
     }
     setItems(next);
     if (next.length) preloadConverter().catch(() => {});
@@ -76,7 +78,7 @@ export function PdfOnlyView() {
         const pdf = await hwpToPdf(it.file, (done, total) => update(it.key, { note: `${Math.min(done + 1, total)}/${total}쪽` }));
         const url = URL.createObjectURL(pdf);
         update(it.key, { status: "done", pdf, url, note: undefined });
-        save(url, pdfName(it.file.name));
+        save(url, pdfName(it));
       } catch (err) {
         update(it.key, { status: "error", error: (err as Error).message || "PDF로 바꾸지 못했어요." });
       }
@@ -161,7 +163,12 @@ export function PdfOnlyView() {
                 <li key={p.key} className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
                   <FileBadge ext={p.status === "done" ? "pdf" : extOf(p.file.name)} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{p.status === "done" ? pdfName(p.file.name) : p.file.name}</span>
+                    <FileNameInput
+                      value={p.label}
+                      ext="pdf"
+                      disabled={busy && p.status === "converting"}
+                      onChange={(v) => setItems((prev) => prev.map((x) => (x.key === p.key ? { ...x, label: v } : x)))}
+                    />
                     <span className={cn("block truncate text-xs", p.error ? "text-destructive" : "text-muted-foreground")}>
                       {p.error ||
                         (p.status === "converting" && p.note
@@ -172,7 +179,7 @@ export function PdfOnlyView() {
                     </span>
                   </span>
                   {p.status === "done" && p.url ? (
-                    <Button type="button" variant="outline" size="sm" onClick={() => save(p.url!, pdfName(p.file.name))}>
+                    <Button type="button" variant="outline" size="sm" onClick={() => save(p.url!, pdfName(p))}>
                       <Download /> 받기
                     </Button>
                   ) : busy || p.status !== "waiting" ? (
@@ -191,6 +198,8 @@ export function PdfOnlyView() {
               ))}
             </ul>
           )}
+
+          {items.length > 0 && !busy && <p className="mt-2 text-xs text-muted-foreground">파일 이름을 누르면 내려받을 PDF 이름을 바꿀 수 있어요.</p>}
 
           <div className="mt-4 flex gap-2">
             <Button type="button" variant="brand" size="lg" className="flex-1" disabled={busy || !pending || items.length === 0} onClick={convertAll}>

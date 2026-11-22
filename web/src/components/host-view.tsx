@@ -15,7 +15,8 @@ import { RadioCard } from "@/components/ui/radio-card";
 import { api, localLinks, type AppConfig } from "@/lib/api";
 import { hwpToPdf, preloadConverter } from "@/lib/convert";
 import { useAuth } from "@/lib/auth";
-import { extOf, formatSize } from "@/lib/format";
+import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
+import { FileNameInput } from "@/components/file-name-input";
 import { cn } from "@/lib/utils";
 
 const ALLOWED = ["hwp", "hwpx", "pdf"];
@@ -38,7 +39,7 @@ const OUTPUTS = [
   { value: "original", title: "원본 그대로", desc: "변환하지 않아요" },
 ] as const;
 
-type Picked = { key: string; file: File; status: "waiting" | "uploading" | "converting" | "done" | "error"; error?: string; note?: string };
+type Picked = { key: string; file: File; label: string; status: "waiting" | "uploading" | "converting" | "done" | "error"; error?: string; note?: string };
 type Created = { id: string; adminToken: string; password: string };
 
 export function HostView() {
@@ -99,7 +100,7 @@ export function HostView() {
         );
         break;
       }
-      next.push({ key: `${file.name}-${file.size}-${Math.random()}`, file, status: "waiting" });
+      next.push({ key: `${file.name}-${file.size}-${Math.random()}`, file, label: baseOf(file.name), status: "waiting" });
     }
     setFiles(next);
     // HWP · HWPX 가 있으면 변환 엔진을 미리 받아 둡니다.
@@ -127,7 +128,7 @@ export function HostView() {
           password,
           output,
           expireMinutes: minutes,
-          files: files.map((p) => ({ name: p.file.name, size: p.file.size })),
+          files: files.map((p) => ({ name: displayName(p.label, p.file.name), size: p.file.size })),
         }),
       });
       localLinks.add({ id: res.id, adminToken: res.adminToken, title: title || "배포 자료", createdAt: new Date().toISOString() });
@@ -273,7 +274,12 @@ export function HostView() {
                   <li key={p.key} className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
                     <FileBadge ext={extOf(p.file.name)} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{p.file.name}</span>
+                      <FileNameInput
+                        value={p.label}
+                        ext={extOf(p.file.name)}
+                        disabled={busy || p.status !== "waiting"}
+                        onChange={(v) => setFiles((prev) => prev.map((x) => (x.key === p.key ? { ...x, label: v } : x)))}
+                      />
                       <span className={cn("block truncate text-xs", p.error ? "text-destructive" : "text-muted-foreground")}>
                         {p.error || (p.note && p.status === "converting" ? `PDF로 바꾸는 중 · ${p.note}` : formatSize(p.file.size))}
                       </span>
@@ -293,6 +299,10 @@ export function HostView() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {files.length > 0 && !busy && (
+              <p className="mt-2 text-xs text-muted-foreground">파일 이름을 누르면 받는 사람에게 보일 이름을 바꿀 수 있어요.</p>
             )}
 
             {!member && auth.ready && (

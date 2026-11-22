@@ -23,3 +23,14 @@ export const STATUS_TEXT: Record<string, string> = {
   done: "완료",
   error: "실패",
 };
+
+/** 확장자를 뺀 이름 */
+export function baseOf(name: string) {
+  return name.replace(/\.[A-Za-z0-9]+$/, "");
+}
+
+/** 받는 사람에게 보일 파일 이름: 파일 이름에 못 쓰는 글자를 빼고, 비면 원래 이름으로 */
+export function displayName(label: string, original: string, ext = extOf(original)) {
+  const base = label.replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 150) || baseOf(original);
+  return `${base}.${ext}`;
+}
