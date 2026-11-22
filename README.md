@@ -5,6 +5,7 @@
 WSNS 쎈스 시리즈 · 무료.
 
 - 주소: https://drop.wsns.studio (배포 후)
+- 미리보기판 (서버 없음, PDF 변환 · 내려받기만): https://osense.github.io/Sensse_Drop/
 - 소개: https://wsns.studio/products/sense-drop/
 
 ## 쓰는 방법
@@ -58,6 +59,12 @@ npx wrangler dev       # http://localhost:8787
 
 `SUPABASE_SECRET_KEY` 가 없으면 **개발 모드**로 돌아갑니다: 링크 정보는 메모리에, 파일은 로컬 R2 에 저장하고,
 `Authorization: Bearer dev-member` 를 회원으로 봅니다. 공유 주소를 로컬로 만들려면 `.dev.vars` 에 `PUBLIC_URL=http://localhost:8787`.
+
+## 미리보기판 (GitHub Pages)
+
+서버를 붙이기 전에 변환만 써 볼 수 있게 `main` 푸시마다 `.github/workflows/pages.yml` 이 `npm --prefix web run build:pages` 로 만든 정적 화면을 `gh-pages` 브랜치에 올립니다.
+`NEXT_PUBLIC_STATIC_ONLY=1` 이면 첫 화면이 "PDF로 바꾸고 내려받기"(`web/src/components/pdf-only-view.tsx`)로 바뀌고, 링크 공유 · 로그인 메뉴는 숨깁니다.
+저장소 Settings → Pages 에서 Source 가 `gh-pages` 브랜치인지 확인하세요.
 
 ## 배포 (Cloudflare Workers, GitHub Actions)
 

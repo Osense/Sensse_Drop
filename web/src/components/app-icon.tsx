@@ -1,10 +1,11 @@
 import { cn } from "@/lib/utils";
+import { asset } from "@/lib/config";
 
 /** 쎈스드롭 앱 아이콘 (public/icon.svg 와 같은 그림) */
 export function AppIcon({ className }: { className?: string }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src="/icon.svg" alt="" width={64} height={64} className={cn("size-9 rounded-[22%] shadow-md shadow-brand/25", className)} />
+    <img src={asset("/icon.svg")} alt="" width={64} height={64} className={cn("size-9 rounded-[22%] shadow-md shadow-brand/25", className)} />
   );
 }
 

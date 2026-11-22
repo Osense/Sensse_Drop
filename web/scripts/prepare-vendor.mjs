@@ -20,4 +20,6 @@ const gz = join(out, "rhwp_bg.wasm.gz");
 if (!existsSync(gz) || statSync(gz).mtimeMs < statSync(wasm).mtimeMs) {
   await pipeline(createReadStream(wasm), createGzip({ level: constants.Z_BEST_COMPRESSION }), createWriteStream(gz));
 }
+// 정적 호스팅(GitHub Pages)은 Worker 가 없어 gzip 을 풀어 줄 수 없으니 원본 WASM 도 둡니다.
+if (process.env.NEXT_PUBLIC_STATIC_ONLY === "1") copyFileSync(wasm, join(out, "rhwp_bg.wasm"));
 console.log(`vendor: rhwp.js, rhwp_bg.wasm.gz (${(statSync(gz).size / 1048576).toFixed(1)}MB)`);

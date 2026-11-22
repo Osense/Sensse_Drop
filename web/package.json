@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node scripts/prepare-vendor.mjs && next dev",
     "build": "node scripts/prepare-vendor.mjs && next build",
+    "build:pages": "NEXT_PUBLIC_STATIC_ONLY=1 NEXT_PUBLIC_BASE_PATH=/Sensse_Drop npm run build && touch out/.nojekyll",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

@@ -12,6 +12,8 @@
  * (scripts/prepare-vendor.mjs, Worker 의 gzip 제공).
  */
 
+import { asset } from "@/lib/config";
+
 type RhwpDoc = {
   pageCount(): number;
   getPageInfo(page: number): string;
@@ -60,8 +62,8 @@ export function preloadConverter(): Promise<RhwpModule> {
         }
         return ctx.measureText(text).width;
       };
-      const mod = (await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ "/vendor/rhwp.js" as string)) as RhwpModule;
-      await mod.default({ module_or_path: "/vendor/rhwp_bg.wasm" });
+      const mod = (await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ asset("/vendor/rhwp.js") as string)) as RhwpModule;
+      await mod.default({ module_or_path: asset("/vendor/rhwp_bg.wasm") });
       return mod;
     })();
     loading.catch(() => {

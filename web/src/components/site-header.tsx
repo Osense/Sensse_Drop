@@ -7,6 +7,7 @@ import { AppIcon, Wordmark } from "@/components/app-icon";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
+import { STATIC_ONLY } from "@/lib/config";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -17,7 +18,7 @@ const NAV = [
 export function SiteHeader() {
   const pathname = usePathname();
   const { ready, email, signOut } = useAuth();
-  const isShare = pathname.startsWith("/s/");
+  const isShare = pathname.startsWith("/s/") || STATIC_ONLY;
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-xl">

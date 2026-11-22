@@ -11,3 +11,12 @@ export const WSNS_URL = "https://wsns.studio";
 export const WSNS_SIGNUP_URL = `${WSNS_URL}/signup/`;
 export const WSNS_FORGOT_URL = `${WSNS_URL}/forgot-password/`;
 export const PRODUCT_URL = `${WSNS_URL}/products/sense-drop/`;
+
+/**
+ * 서버 없이 정적 호스팅(GitHub Pages)으로 올릴 때: 링크 공유 없이 "브라우저에서 PDF로 바꿔 내려받기"만 합니다.
+ * NEXT_PUBLIC_STATIC_ONLY=1, NEXT_PUBLIC_BASE_PATH=/Sensse_Drop 로 빌드 (npm run build:pages).
+ */
+export const STATIC_ONLY = process.env.NEXT_PUBLIC_STATIC_ONLY === "1";
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
+/** public/ 파일 주소 (basePath 를 붙여 줍니다) */
+export const asset = (path: string) => `${BASE_PATH}${path}`;
