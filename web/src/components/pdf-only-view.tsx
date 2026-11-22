@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { hwpToPdf, preloadConverter } from "@/lib/convert";
 import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
 import { FileNameInput } from "@/components/file-name-input";
+import { ExpirePicker } from "@/components/expire-picker";
 import { cn } from "@/lib/utils";
 
 /**
@@ -18,6 +19,12 @@ import { cn } from "@/lib/utils";
  */
 const MAX_FILES = 10;
 const MAX_MB = 20;
+const EXPIRE_OPTIONS = [
+  { minutes: 10, label: "10분 후" },
+  { minutes: 60, label: "1시간 후" },
+  { minutes: 4320, label: "3일 후" },
+  { minutes: 10080, label: "7일 후" },
+];
 
 type Item = {
   key: string;
@@ -115,6 +122,26 @@ export function PdfOnlyView() {
             HWP · HWPX를 올리면 이 브라우저 안에서 PDF로 바꿔 바로 내려받아요. 파일은 어디에도 올라가지 않아요.
           </p>
         </div>
+
+        <Card className="mb-4 p-5 sm:p-6">
+          <h2 className="mb-3 flex items-center gap-2 font-semibold">
+            자동 삭제 시간
+            <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand">공유 링크와 함께 곧 열려요</span>
+          </h2>
+          <ExpirePicker
+            options={EXPIRE_OPTIONS}
+            value={10}
+            isAllowed={(m) => m === 10}
+            onChange={() => {}}
+            member={false}
+            note={
+              <>
+                공유 링크를 만들면 정한 시간 뒤에 링크와 파일이 지워져요. 비회원은 <b className="text-foreground">10분 후 삭제</b>, 로그인하면 1시간 · 3일 · 7일도
+                고를 수 있어요. 지금 미리보기판은 파일이 이 기기 밖으로 나가지 않아요.
+              </>
+            }
+          />
+        </Card>
 
         <Card className="p-5 sm:p-6">
           <div
