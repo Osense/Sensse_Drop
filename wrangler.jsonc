@@ -15,7 +15,7 @@
   },
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "sense-drop-files" }],
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } }],
-  "triggers": { "crons": ["17 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "routes": [{ "pattern": "drop.wsns.studio", "custom_domain": true }],
   "vars": {
     "PUBLIC_URL": "https://drop.wsns.studio",
@@ -24,9 +24,7 @@
     "GUEST_MAX_FILES": "2",
     "GUEST_MAX_FILE_MB": "5",
     "MEMBER_MAX_FILES": "10",
-    "MEMBER_MAX_FILE_MB": "20",
-    "DEFAULT_EXPIRE_DAYS": "7",
-    "MAX_EXPIRE_DAYS": "30"
+    "MEMBER_MAX_FILE_MB": "20"
   },
   "observability": { "enabled": true }
 }

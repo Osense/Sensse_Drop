@@ -22,8 +22,14 @@ const ALLOWED = ["hwp", "hwpx", "pdf"];
 const DEFAULT_CONFIG: AppConfig = {
   guest: { maxFiles: 2, maxFileMb: 5 },
   member: { maxFiles: 10, maxFileMb: 20 },
-  defaultExpireDays: 7,
-  maxExpireDays: 30,
+  expireOptions: [
+    { minutes: 10, label: "10분 후" },
+    { minutes: 60, label: "1시간 후" },
+    { minutes: 4320, label: "3일 후" },
+    { minutes: 10080, label: "7일 후" },
+  ],
+  guestExpireMinutes: [10],
+  defaultExpireMinutes: { guest: 10, member: 4320 },
 };
 
 const OUTPUTS = [
@@ -46,7 +52,15 @@ export function HostView() {
   const [title, setTitle] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPw, setShowPw] = React.useState(false);
-  const [days, setDays] = React.useState(7);
+  const [pickedMinutes, setMinutes] = React.useState<number | null>(null);
+  // 비회원은 10분만. 고른 값이 없거나 쓸 수 없는 값이면 기본값으로.
+  const minutesAllowed = (m: number) => member || config.guestExpireMinutes.includes(m);
+  const minutes =
+    pickedMinutes != null && minutesAllowed(pickedMinutes)
+      ? pickedMinutes
+      : member
+        ? config.defaultExpireMinutes.member
+        : config.defaultExpireMinutes.guest;
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [over, setOver] = React.useState(false);
@@ -55,10 +69,7 @@ export function HostView() {
 
   React.useEffect(() => {
     api<AppConfig>("/api/config")
-      .then((c) => {
-        setConfig(c);
-        setDays(c.defaultExpireDays);
-      })
+      .then((c) => setConfig(c))
       .catch(() => {});
   }, []);
 
@@ -115,7 +126,7 @@ export function HostView() {
           title,
           password,
           output,
-          expireDays: days,
+          expireMinutes: minutes,
           files: files.map((p) => ({ name: p.file.name, size: p.file.size })),
         }),
       });
@@ -180,7 +191,7 @@ export function HostView() {
     setTitle("");
     setPassword("");
     setOutput("pdf");
-    setDays(config.defaultExpireDays);
+    setMinutes(null);
   }
 
   const headersFor = React.useCallback(async (): Promise<Record<string, string>> => {
@@ -342,25 +353,42 @@ export function HostView() {
               <p className="text-xs text-muted-foreground">링크를 받은 사람이 이 비밀번호를 넣어야 파일 목록이 보여요.</p>
             </div>
             <div className="space-y-1.5">
-              <Label>보관 기간</Label>
-              <div className="flex flex-wrap gap-1.5">
-                {[1, 3, 7, 14, 30]
-                  .filter((d) => d <= config.maxExpireDays)
-                  .map((d) => (
+              <Label>자동 삭제</Label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {config.expireOptions.map((o) => {
+                  const locked = !minutesAllowed(o.minutes);
+                  return (
                     <button
                       type="button"
-                      key={d}
-                      onClick={() => setDays(d)}
+                      key={o.minutes}
+                      disabled={locked}
+                      onClick={() => setMinutes(o.minutes)}
+                      title={locked ? "로그인하면 고를 수 있어요" : undefined}
                       className={cn(
-                        "rounded-full border px-3.5 py-1.5 text-sm transition-colors",
-                        days === d ? "border-brand bg-brand/10 font-semibold text-brand" : "hover:bg-accent",
+                        "inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-full border px-1 py-1.5 text-[13px] transition-colors sm:text-sm",
+                        minutes === o.minutes ? "border-brand bg-brand/10 font-semibold text-brand" : "hover:bg-accent",
+                        locked && "cursor-not-allowed text-muted-foreground/60 hover:bg-transparent",
                       )}
                     >
-                      {d}일
+                      {locked && <Lock className="size-3" />}
+                      {o.label}
                     </button>
-                  ))}
+                  );
+                })}
               </div>
-              <p className="text-xs text-muted-foreground">기간이 지나면 링크와 파일이 저절로 지워져요.</p>
+              <p className="text-xs text-muted-foreground">
+                {member ? (
+                  "정한 시간이 지나면 링크와 파일이 저절로 지워져요."
+                ) : (
+                  <>
+                    비회원은 <b className="text-foreground">10분 후 삭제</b>만 쓸 수 있어요.{" "}
+                    <Link href="/login/" className="font-semibold text-brand">
+                      로그인
+                    </Link>
+                    하면 1시간 · 3일 · 7일도 고를 수 있어요.
+                  </>
+                )}
+              </p>
             </div>
 
             <Button type="submit" variant="brand" size="lg" className="w-full" disabled={busy}>
@@ -371,7 +399,7 @@ export function HostView() {
         </form>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          <Wordmark /> · 무료 · 올린 파일은 보관 기간이 지나면 지워져요
+          <Wordmark /> · 무료 · 올린 파일은 정한 시간이 지나면 지워져요
         </p>
       </div>
     </div>

@@ -15,8 +15,6 @@ export interface Env {
   GUEST_MAX_FILE_MB?: string;
   MEMBER_MAX_FILES?: string;
   MEMBER_MAX_FILE_MB?: string;
-  DEFAULT_EXPIRE_DAYS?: string;
-  MAX_EXPIRE_DAYS?: string;
 }
 
 export type Output = "pdf" | "original" | "both";

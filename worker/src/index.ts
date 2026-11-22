@@ -67,6 +67,16 @@ function secretOf(env: Env) {
   return env.SESSION_SECRET || env.SUPABASE_SECRET_KEY || "sense-drop-dev-secret";
 }
 
+/** 삭제 시간 선택지 (분) */
+const EXPIRE_OPTIONS = [
+  { minutes: 10, label: "10분 후" },
+  { minutes: 60, label: "1시간 후" },
+  { minutes: 3 * 1440, label: "3일 후" },
+  { minutes: 7 * 1440, label: "7일 후" },
+];
+const GUEST_EXPIRE_MINUTES = [10];
+const MEMBER_DEFAULT_EXPIRE = 3 * 1440;
+
 function isExpired(share: ShareRow) {
   return Date.parse(share.expires_at) < Date.now();
 }
@@ -163,8 +173,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({
       guest: limitsFor(env, false),
       member: limitsFor(env, true),
-      defaultExpireDays: num(env.DEFAULT_EXPIRE_DAYS, 7),
-      maxExpireDays: num(env.MAX_EXPIRE_DAYS, 30),
+      expireOptions: EXPIRE_OPTIONS,
+      guestExpireMinutes: GUEST_EXPIRE_MINUTES,
+      defaultExpireMinutes: { guest: GUEST_EXPIRE_MINUTES[0], member: MEMBER_DEFAULT_EXPIRE },
       devMode: isDevMode(env),
     });
   }
@@ -177,7 +188,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       title?: string;
       password?: string;
       output?: Output;
-      expireDays?: number;
+      expireMinutes?: number;
       files?: { name?: string; size?: number }[];
     } | null;
     if (!body) return fail(400, "요청 형식이 올바르지 않아요.");
@@ -199,10 +210,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const password = String(body.password ?? "");
     if (password.length < 4 || password.length > 64) return fail(400, "비밀번호는 4~64자로 정해 주세요.");
     const output: Output = OUTPUTS.has(body.output as Output) ? (body.output as Output) : "pdf";
-    const maxDays = num(env.MAX_EXPIRE_DAYS, 30);
-    let days = Math.floor(Number(body.expireDays));
-    if (!Number.isFinite(days) || days < 1) days = num(env.DEFAULT_EXPIRE_DAYS, 7);
-    days = Math.min(days, maxDays);
+    // 삭제 시간: 비회원은 10분만, 로그인 회원은 10분 · 1시간 · 3일 · 7일
+    const allowed = userId ? EXPIRE_OPTIONS.map((o) => o.minutes) : GUEST_EXPIRE_MINUTES;
+    const asked = Math.floor(Number(body.expireMinutes));
+    let minutes = Number.isFinite(asked) ? asked : userId ? MEMBER_DEFAULT_EXPIRE : GUEST_EXPIRE_MINUTES[0];
+    if (!allowed.includes(minutes)) {
+      if (!userId && EXPIRE_OPTIONS.some((o) => o.minutes === minutes)) {
+        return fail(400, "비회원은 10분 후 삭제만 쓸 수 있어요. 로그인하면 1시간 · 3일 · 7일도 고를 수 있어요.");
+      }
+      return fail(400, "삭제 시간이 올바르지 않아요.");
+    }
 
     const id = randomId(10);
     const adminToken = randomToken();
@@ -215,7 +232,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       password_hash: await hashPassword(password),
       admin_token_hash: await sha256(adminToken),
       created_at: now.toISOString(),
-      expires_at: new Date(now.getTime() + days * 86400000).toISOString(),
+      expires_at: new Date(now.getTime() + minutes * 60000).toISOString(),
     };
     const rows: FileRow[] = files.map((f, i) => ({
       id: randomId(8),
@@ -380,7 +397,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   return fail(404, "없는 주소예요.");
 }
 
-/** 만료된 링크와 파일 정리 (매시간 Cron) */
+/** 만료된 링크와 파일 정리 (5분마다 Cron. 만료된 링크는 Cron 전에도 바로 열리지 않아요) */
 async function cleanup(env: Env) {
   const db = getDb(env);
   for (let round = 0; round < 5; round++) {

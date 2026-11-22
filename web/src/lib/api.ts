@@ -3,8 +3,9 @@ export type Limits = { maxFiles: number; maxFileMb: number };
 export type AppConfig = {
   guest: Limits;
   member: Limits;
-  defaultExpireDays: number;
-  maxExpireDays: number;
+  expireOptions: { minutes: number; label: string }[];
+  guestExpireMinutes: number[];
+  defaultExpireMinutes: { guest: number; member: number };
 };
 
 export type FileStatus = "uploading" | "converting" | "done" | "error";
