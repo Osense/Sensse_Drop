@@ -1,0 +1,32 @@
+// 쎈스드롭 — Cloudflare Workers 배포 설정
+// - 정적 화면: web/out (npm run build)
+// - /api/*, /s/*, /vendor/rhwp_bg.wasm 은 Worker 가 먼저 받습니다.
+// - 비밀값(SUPABASE_SECRET_KEY, SESSION_SECRET)은 wrangler secret 또는 GitHub Actions 로 넣습니다.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sense-drop",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "./web/out",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*", "/s/*", "/vendor/rhwp_bg.wasm"]
+  },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "sense-drop-files" }],
+  "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } }],
+  "triggers": { "crons": ["17 * * * *"] },
+  "routes": [{ "pattern": "drop.wsns.studio", "custom_domain": true }],
+  "vars": {
+    "PUBLIC_URL": "https://drop.wsns.studio",
+    "SUPABASE_URL": "https://cqqhvxrgugomyekbpwqp.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_mzKE-7e3MvLXinAVZl5dLg_Wg7nAipP",
+    "GUEST_MAX_FILES": "2",
+    "GUEST_MAX_FILE_MB": "5",
+    "MEMBER_MAX_FILES": "10",
+    "MEMBER_MAX_FILE_MB": "20",
+    "DEFAULT_EXPIRE_DAYS": "7",
+    "MAX_EXPIRE_DAYS": "30"
+  },
+  "observability": { "enabled": true }
+}

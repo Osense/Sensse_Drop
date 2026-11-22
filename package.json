@@ -1,0 +1,16 @@
+{
+  "name": "sense-drop",
+  "private": true,
+  "description": "쎈스드롭 - 한글(HWP/HWPX) 문서를 PDF로 바꿔 비밀번호 링크로 배포 (WSNS 쎈스 시리즈)",
+  "scripts": {
+    "build": "npm --prefix web run build",
+    "dev": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc -p worker --noEmit && npm --prefix web run lint"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261122.2",
+    "typescript": "5.9",
+    "wrangler": "^4.166.0"
+  }
+}
