@@ -19,7 +19,7 @@ const NAV = [
 export function SiteHeader() {
   const pathname = usePathname();
   const { ready, email, signOut } = useAuth();
-  const isShare = pathname.startsWith("/s/");
+  const isShare = pathname.startsWith("/s/") || /^\/[a-km-np-z2-9]{6}\/?$/.test(pathname);
   const showNav = !isShare;
 
   return (

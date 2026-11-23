@@ -1,12 +1,12 @@
 /**
  * 쎈스드롭 Cloudflare Worker
  *
- * - 정적 화면(web/out)은 Workers 정적 자산으로 제공하고, /api/* · /s/* · /vendor/rhwp_bg.wasm 만 이 코드가 받습니다.
+ * - 정적 화면(web/out)은 Workers 정적 자산으로 제공합니다. /api/*, 받는 사람 주소(/<코드>, /s/<코드>), /vendor/rhwp_bg.wasm 은 이 코드가 처리합니다.
  * - 파일은 R2(BUCKET), 링크 정보는 Supabase WSNS 프로젝트(sd_shares · sd_files)에 둡니다.
  * - HWP/HWPX → PDF 변환은 올리는 사람의 브라우저에서 끝내고 PDF를 올립니다. 서버는 변환하지 않습니다.
  */
 import { ALLOWED_EXT, isHangul } from "./file-types";
-import { checkAccess, hashPassword, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
+import { checkAccess, hashPassword, randomCode, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
 import { getDb, getUserId, HISTORY_DAYS, isDevMode, type Db } from "./db";
 import type { Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
 import { EXPIRE_OPTIONS, MIN_CUSTOM_MINUTES, MULTIPART_THRESHOLD, PART_SIZE, PLANS, PRO_GRACE_DAYS, type Plan, type PlanId } from "./plans";
@@ -175,7 +175,7 @@ function summarize(env: Env, request: Request, s: ShareWithFiles): ShareSummary 
     id: s.id,
     title: s.title,
     message: s.message ?? "",
-    url: `${baseUrl(env, request)}/s/${s.id}`,
+    url: `${baseUrl(env, request)}/${s.id}`,
     createdAt: s.created_at,
     expiresAt: s.expires_at,
     closedAt: s.closed_at ?? null,
@@ -369,7 +369,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       );
     }
 
-    const id = randomId(10);
+    // 직접 칠 수 있게 짧은 코드. 겹치면 다시 뽑기 (32^6 ≈ 10억 가지)
+    let id = randomCode();
+    for (let i = 0; i < 5 && (await db.getShare(id)); i++) id = randomCode();
     const adminToken = randomToken();
     const share: ShareRow = {
       id,
@@ -396,7 +398,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       original_uploaded: false,
     }));
     await db.createShare(share, rows);
-    return json({ id, adminToken, url: `${baseUrl(env, request)}/s/${id}`, files: rows.map((r) => ({ id: r.id, name: r.original_name })) }, 201);
+    return json({ id, adminToken, url: `${baseUrl(env, request)}/${id}`, files: rows.map((r) => ({ id: r.id, name: r.original_name })) }, 201);
   }
 
   // ---------- 내 배포 기록 ----------
@@ -410,7 +412,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (path === "/api/shares/lookup" && method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { links?: { id?: string; token?: string }[] };
     const links = (Array.isArray(body.links) ? body.links : [])
-      .filter((l) => typeof l?.id === "string" && /^[A-Za-z0-9]{8,16}$/.test(l.id) && typeof l.token === "string")
+      .filter((l) => typeof l?.id === "string" && /^[A-Za-z0-9]{6,16}$/.test(l.id) && typeof l.token === "string")
       .slice(0, 60);
     const rows = await db.getShares(links.map((l) => l.id!));
     const out: ShareSummary[] = [];
@@ -422,7 +424,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   // ---------- 링크 관리 ----------
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/manage$/.exec(path)) && method === "GET") {
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/manage$/.exec(path)) && method === "GET") {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
     return json({
@@ -432,7 +434,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       output: share.output,
       createdAt: share.created_at,
       expiresAt: share.expires_at,
-      url: `${baseUrl(env, request)}/s/${share.id}`,
+      url: `${baseUrl(env, request)}/${share.id}`,
       files: share.files.map((f) => ({
         id: f.id,
         name: f.original_name,
@@ -446,7 +448,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   // ---------- 파일 올리기 (작은 파일: 한 번에, 큰 파일: 나눠서) ----------
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/files\/([A-Za-z0-9]{6,16})(\/mpu(?:\/([A-Za-z0-9_.~-]+)(?:\/(\d+|complete))?)?)?$/.exec(path))) {
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/files\/([A-Za-z0-9]{6,16})(\/mpu(?:\/([A-Za-z0-9_.~-]+)(?:\/(\d+|complete))?)?)?$/.exec(path))) {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
     if (isExpired(share)) return fail(410, "닫힌 링크예요.");
@@ -531,7 +533,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return fail(405, "지원하지 않는 요청이에요.");
   }
 
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/files\/([A-Za-z0-9]{6,16})\/fail$/.exec(path)) && method === "POST") {
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/files\/([A-Za-z0-9]{6,16})\/fail$/.exec(path)) && method === "POST") {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
     const file = share.files.find((f) => f.id === m![2]);
@@ -541,14 +543,14 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ ok: true });
   }
 
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/close$/.exec(path)) && method === "POST") {
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/close$/.exec(path)) && method === "POST") {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
     await closeShare(env, db, share);
     return json(summarize(env, request, share));
   }
 
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})$/.exec(path)) && method === "DELETE") {
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})$/.exec(path)) && method === "DELETE") {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
     await removeShareFiles(env, share.id);
@@ -557,7 +559,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   // ---------- 받는 사람 ----------
-  if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})$/.exec(path)) && method === "GET") {
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})$/.exec(path)) && method === "GET") {
     const share = await db.getShare(m[1]);
     if (share?.closed_at) return fail(410, "올린 분이 이 링크를 닫았어요.");
     if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
@@ -570,7 +572,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     });
   }
 
-  if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})\/auth$/.exec(path)) && method === "POST") {
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/auth$/.exec(path)) && method === "POST") {
     const share = await db.getShare(m[1]);
     if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
     if (env.AUTH_LIMITER) {
@@ -588,13 +590,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     });
   }
 
-  if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})\/files$/.exec(path)) && method === "GET") {
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/files$/.exec(path)) && method === "GET") {
     const share = await requireViewer(env, db, request, m[1]);
     if (share instanceof Response) return share;
     return json({ title: share.title, message: share.message ?? "", expiresAt: share.expires_at, items: downloadItems(share) });
   }
 
-  if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})\/download\/([A-Za-z0-9]{6,16})\/(pdf|original)$/.exec(path)) && method === "GET") {
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/download\/([A-Za-z0-9]{6,16})\/(pdf|original)$/.exec(path)) && method === "GET") {
     const share = await requireViewer(env, db, request, m[1]);
     if (share instanceof Response) return share;
     const kind = m[3] as "pdf" | "original";
@@ -652,14 +654,22 @@ async function cleanup(env: Env) {
   }
 }
 
+/** 짧은 링크 코드 (worker/src/crypto.ts CODE_ALPHABET). vendor · links 같은 화면 경로와 겹치지 않음 */
+const SHARE_PATH = /^[a-km-np-z2-9]{6}$/;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith("/api/")) return await handleApi(request, env, url);
 
-      // 받는 사람 화면: /s/<링크> → 정적 페이지 /s/
-      if (/^\/s\/[A-Za-z0-9]+\/?$/.test(url.pathname)) {
+      // 받는 사람 화면: /<코드> (직접 치는 짧은 주소) 또는 예전 /s/<코드> → 정적 페이지 /s/
+      // 대문자로 쳐도 열리게 소문자 주소로 보냄
+      const code = /^\/(?:s\/)?([A-Za-z0-9]{6,16})\/?$/.exec(url.pathname);
+      if (code && code[1] !== code[1].toLowerCase() && SHARE_PATH.test(code[1].toLowerCase())) {
+        return Response.redirect(new URL(`/${code[1].toLowerCase()}`, url).toString(), 302);
+      }
+      if (code && (url.pathname.startsWith("/s/") || SHARE_PATH.test(code[1]))) {
         const res = await env.ASSETS.fetch(new Request(new URL("/s/", url), request));
         const out = new Response(res.body, res);
         out.headers.set("X-Robots-Tag", "noindex");

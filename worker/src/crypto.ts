@@ -1,6 +1,16 @@
 const ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const enc = new TextEncoder();
 
+/** 받는 사람이 직접 칠 수 있는 링크 코드: 소문자 · 숫자, 헷갈리는 l · 1 · o · 0 은 뺌 */
+export const CODE_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
+export const SHARE_CODE_LENGTH = 6;
+export function randomCode(length = SHARE_CODE_LENGTH): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  let out = "";
+  for (const b of bytes) out += CODE_ALPHABET[b % CODE_ALPHABET.length];
+  return out;
+}
+
 export function randomId(length = 10): string {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   let out = "";

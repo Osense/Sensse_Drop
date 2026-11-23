@@ -1,6 +1,6 @@
 // 쎈스드롭 — Cloudflare Workers 배포 설정
 // - 정적 화면: web/out (npm run build)
-// - /api/*, /s/*, /vendor/rhwp_bg.wasm 은 Worker 가 먼저 받습니다.
+// - 받는 사람 주소가 drop.wsns.studio/<코드> 라 Worker 가 먼저 받고, 나머지는 정적 화면으로 넘깁니다 (_next 등 정적 파일은 바로).
 // - 비밀값(SUPABASE_SECRET_KEY, SESSION_SECRET)은 wrangler secret 또는 GitHub Actions 로 넣습니다.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -11,7 +11,7 @@
     "directory": "./web/out",
     "binding": "ASSETS",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*", "/s/*", "/vendor/rhwp_bg.wasm"]
+    "run_worker_first": ["/*", "!/_next/*", "!/brand/*"]
   },
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "sense-drop-files" }],
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } }],

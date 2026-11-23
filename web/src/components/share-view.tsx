@@ -16,7 +16,7 @@ import { extOf, formatDate, formatSize } from "@/lib/format";
 type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean };
 type State = "loading" | "login" | "list" | "gone";
 
-/** 받는 사람 화면: /s/<링크> */
+/** 받는 사람 화면: /<코드> (예: drop.wsns.studio/k3m9qr) */
 export function ShareView() {
   const [id, setId] = React.useState("");
   const [state, setState] = React.useState<State>("loading");
@@ -50,11 +50,11 @@ export function ShareView() {
   }, []);
 
   React.useEffect(() => {
-    // /s/<링크> (서버) 또는 /s/?id=<링크> (체험판)
+    // /<코드> (서버, 직접 치는 짧은 주소) · /s/<코드> (예전 주소) · /s/?id=<코드> (체험판)
     const parts = window.location.pathname.split("/").filter(Boolean);
-    const shareId = new URLSearchParams(window.location.search).get("id") || parts[parts.indexOf("s") + 1] || "";
+    const shareId = new URLSearchParams(window.location.search).get("id") || (parts.includes("s") ? parts[parts.indexOf("s") + 1] : parts[parts.length - 1]) || "";
     setId(shareId);
-    if (!/^[A-Za-z0-9]{8,16}$/.test(shareId)) {
+    if (!/^[A-Za-z0-9]{6,16}$/.test(shareId)) {
       setState("gone");
       return;
     }

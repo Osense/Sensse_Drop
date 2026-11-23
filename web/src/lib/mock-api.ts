@@ -269,7 +269,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     }
     const now = Date.now();
     const share: MockShare = {
-      id: rid(10),
+      id: Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(""),
       title: String(b.title ?? "").trim().slice(0, 100) || "배포 자료",
       message: String(b.message ?? "").trim().slice(0, 1000),
       output: ["pdf", "original", "both"].includes(b.output) ? b.output : "pdf",
