@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
-import { WSNS_FORGOT_URL, WSNS_SIGNUP_URL } from "@/lib/config";
+import { STATIC_ONLY, WSNS_FORGOT_URL, WSNS_SIGNUP_URL } from "@/lib/config";
 
 export function LoginView() {
   const router = useRouter();
@@ -58,6 +58,11 @@ export function LoginView() {
                 <td className="font-semibold">20MB</td>
               </tr>
               <tr className="border-t">
+                <td className="px-4 py-2.5 text-left">자동 삭제</td>
+                <td>10분 후</td>
+                <td className="font-semibold">10분~7일</td>
+              </tr>
+              <tr className={STATIC_ONLY ? "hidden" : "border-t"}>
                 <td className="px-4 py-2.5 text-left">내 링크 모아 보기</td>
                 <td className="text-muted-foreground">이 기기만</td>
                 <td>
@@ -68,7 +73,7 @@ export function LoginView() {
           </table>
         </div>
         <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
-          <BrandLogo className="h-5" /> 쎈스 초크 · 쎈스 스쿨과 같은 계정이에요.
+          <BrandLogo className="h-5" /> wsns.studio · 쎈스 초크 · 쎈스 스쿨과 같은 계정이에요. 계정이 없으면 WSNS에서 무료로 가입하세요.
         </p>
       </div>
 
@@ -96,10 +101,10 @@ export function LoginView() {
           {error && <p className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm text-destructive">{error}</p>}
         </form>
         <div className="mt-4 flex justify-between text-sm">
-          <a href={WSNS_SIGNUP_URL} className="font-semibold text-brand">
+          <a href={WSNS_SIGNUP_URL} target="_blank" rel="noopener" className="font-semibold text-brand">
             WSNS 회원가입
           </a>
-          <a href={WSNS_FORGOT_URL} className="text-muted-foreground hover:text-foreground">
+          <a href={WSNS_FORGOT_URL} target="_blank" rel="noopener" className="text-muted-foreground hover:text-foreground">
             비밀번호 찾기
           </a>
         </div>

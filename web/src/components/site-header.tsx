@@ -18,7 +18,9 @@ const NAV = [
 export function SiteHeader() {
   const pathname = usePathname();
   const { ready, email, signOut } = useAuth();
-  const isShare = pathname.startsWith("/s/") || STATIC_ONLY;
+  const isShare = pathname.startsWith("/s/");
+  // 미리보기판(서버 없음)은 "내 링크" 메뉴를 숨기고 로그인만 보여 줍니다.
+  const showNav = !isShare && !STATIC_ONLY;
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-xl">
@@ -31,7 +33,7 @@ export function SiteHeader() {
           </span>
         </Link>
 
-        {!isShare && (
+        {showNav && (
           <nav className="ml-2 hidden items-center gap-1 rounded-full bg-muted p-1 sm:flex">
             {NAV.map((n) => (
               <Link
@@ -66,7 +68,7 @@ export function SiteHeader() {
           <ThemeToggle />
         </div>
       </div>
-      {!isShare && (
+      {showNav && (
         <nav className="flex border-t sm:hidden">
           {NAV.map((n) => (
             <Link

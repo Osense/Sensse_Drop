@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Download, FileUp, Info, Trash2, X } from "lucide-react";
+import { Download, FileUp, Info, Sparkles, Trash2, X } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { StatusPill } from "@/components/status-pill";
 import { Wordmark } from "@/components/app-icon";
@@ -12,13 +12,14 @@ import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
 import { FileNameInput } from "@/components/file-name-input";
 import { ExpirePicker } from "@/components/expire-picker";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
+import { useAuth } from "@/lib/auth";
 
 /**
  * 서버 없는 미리보기판 (GitHub Pages). 파일은 이 브라우저 밖으로 나가지 않고,
  * HWP · HWPX 를 PDF 로 바꿔 바로 내려받습니다. 비밀번호 링크 공유는 서버를 붙인 뒤에 열립니다.
  */
-const MAX_FILES = 10;
-const MAX_MB = 20;
+const LIMITS = { guest: { maxFiles: 2, maxFileMb: 5 }, member: { maxFiles: 10, maxFileMb: 20 } };
 const EXPIRE_OPTIONS = [
   { minutes: 10, label: "10분 후" },
   { minutes: 60, label: "1시간 후" },
@@ -45,6 +46,10 @@ export function PdfOnlyView() {
   const [busy, setBusy] = React.useState(false);
   const [over, setOver] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const auth = useAuth();
+  const member = Boolean(auth.session);
+  const { maxFiles: MAX_FILES, maxFileMb: MAX_MB } = member ? LIMITS.member : LIMITS.guest;
+  const [expire, setExpire] = React.useState(10);
 
   React.useEffect(() => () => items.forEach((i) => i.url && URL.revokeObjectURL(i.url)), []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -62,12 +67,12 @@ export function PdfOnlyView() {
         continue;
       }
       if (file.size > MAX_MB * 1024 * 1024) {
-        setNotice(`파일 하나는 ${MAX_MB}MB까지예요: ${file.name}`);
+        setNotice(member ? `파일 하나는 ${MAX_MB}MB까지예요: ${file.name}` : `비회원은 파일 하나에 ${MAX_MB}MB까지예요. 로그인하면 ${LIMITS.member.maxFileMb}MB까지 바꿀 수 있어요.`);
         continue;
       }
       if (next.some((p) => p.file.name === file.name && p.file.size === file.size)) continue;
       if (next.length >= MAX_FILES) {
-        setNotice(`한 번에 ${MAX_FILES}개까지 바꿀 수 있어요.`);
+        setNotice(member ? `한 번에 ${MAX_FILES}개까지 바꿀 수 있어요.` : `비회원은 한 번에 ${MAX_FILES}개까지예요. 로그인하면 ${LIMITS.member.maxFiles}개까지 바꿀 수 있어요.`);
         break;
       }
       next.push({ key: `${file.name}-${file.size}-${Math.random()}`, file, label: baseOf(file.name), status: "waiting" });
@@ -130,15 +135,22 @@ export function PdfOnlyView() {
           </h2>
           <ExpirePicker
             options={EXPIRE_OPTIONS}
-            value={10}
-            isAllowed={(m) => m === 10}
-            onChange={() => {}}
-            member={false}
+            value={member ? expire : 10}
+            isAllowed={(m) => member || m === 10}
+            onChange={setExpire}
+            member={member}
             note={
-              <>
-                공유 링크를 만들면 정한 시간 뒤에 링크와 파일이 지워져요. 비회원은 <b className="text-foreground">10분 후 삭제</b>, 로그인하면 1시간 · 3일 · 7일도
-                고를 수 있어요. 지금 미리보기판은 파일이 이 기기 밖으로 나가지 않아요.
-              </>
+              member ? (
+                <>공유 링크를 만들면 정한 시간 뒤에 링크와 파일이 지워져요. 지금 미리보기판은 파일이 이 기기 밖으로 나가지 않아요.</>
+              ) : (
+                <>
+                  공유 링크를 만들면 정한 시간 뒤에 링크와 파일이 지워져요. 비회원은 <b className="text-foreground">10분 후 삭제</b>,{" "}
+                  <Link href="/login/" className="font-semibold text-brand">
+                    로그인
+                  </Link>
+                  하면 1시간 · 3일 · 7일도 고를 수 있어요.
+                </>
+              )
             }
           />
         </Card>
@@ -238,13 +250,24 @@ export function PdfOnlyView() {
               </Button>
             )}
           </div>
+          {!member && auth.ready && (
+            <div className="mt-3 flex items-center gap-2 rounded-lg bg-brand/5 px-3 py-2.5 text-sm">
+              <Sparkles className="size-4 shrink-0 text-brand" />
+              <span className="flex-1 text-muted-foreground">
+                로그인하면 <b className="text-foreground">{LIMITS.member.maxFiles}개 · 파일당 {LIMITS.member.maxFileMb}MB</b>까지 바꿀 수 있어요.
+              </span>
+              <Link href="/login/" className="shrink-0 font-semibold text-brand">
+                로그인
+              </Link>
+            </div>
+          )}
           {notice && <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-sm text-destructive">{notice}</p>}
         </Card>
 
         <div className="mt-4 flex gap-2.5 rounded-xl border bg-brand/5 px-4 py-3.5 text-sm">
           <Info className="mt-0.5 size-4 shrink-0 text-brand" />
           <p className="text-muted-foreground">
-            <b className="text-foreground">미리보기판</b>이에요. 비밀번호 걸린 공유 링크 · QR 코드 · 로그인은 곧 열려요. 수식 · 글상자가 많은 문서는 원본과 조금 다를 수
+            <b className="text-foreground">미리보기판</b>이에요. 비밀번호 걸린 공유 링크 · QR 코드는 곧 열려요. 수식 · 글상자가 많은 문서는 원본과 조금 다를 수
             있으니 내려받은 PDF를 한 번 확인해 주세요.
           </p>
         </div>
