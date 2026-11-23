@@ -19,7 +19,7 @@ WSNS 쎈스 시리즈 · 무료.
 | 한 번에 올리는 파일 | 2개 | 10개 |
 | 파일 하나 용량 | 5MB | 20MB |
 | 자동 삭제 | 10분 후만 | 10분 · 1시간 · 3일 · 7일 후 |
-| 내 링크 모아 보기 | 이 기기에서만 | 어느 기기에서나 |
+| 배포 기록 (열람 · 내려받기 횟수, 바로 닫기) | 이 기기에서만 | 어느 기기에서나 |
 
 회원 계정은 wsns.studio · 쎈스 초크 · 쎈스 스쿨과 같은 **WSNS 통합 계정**(Supabase Auth)입니다. 가입 · 비밀번호 찾기는 wsns.studio 에서 합니다.
 
@@ -36,7 +36,7 @@ wrangler.jsonc
   - [@rhwp/core](https://github.com/edwardkim/rhwp) (Rust + WebAssembly 한글 렌더러, MIT)로 쪽마다 그리고
   - 문서에 쓰인 글자에 맞춰 대체 웹폰트(나눔 · Noto, Google Fonts)를 먼저 받아 다시 조판한 뒤
   - 192dpi 그림으로 jsPDF 에 묶어 PDF 를 만듭니다 (`web/src/lib/convert.ts`).
-- 파일: Cloudflare R2 `sense-drop-files` 버킷 (`shares/<링크>/<파일>.pdf|hwp|hwpx`). 정한 삭제 시간이 지나면 링크는 바로 열리지 않고, 5분마다 도는 Cron 이 링크와 파일을 지웁니다. 삭제 시간 선택지는 `worker/src/index.ts` 의 `EXPIRE_OPTIONS` · `GUEST_EXPIRE_MINUTES`.
+- 파일: Cloudflare R2 `sense-drop-files` 버킷 (`shares/<링크>/<파일>.pdf|hwp|hwpx`). 정한 삭제 시간이 지나거나 직접 닫으면 링크는 바로 열리지 않고, 5분마다 도는 Cron 이 파일을 지웁니다. 제목 · 파일 이름 · 열람/내려받기 횟수 기록은 '배포 기록'에 30일 남았다가 지워집니다 (`HISTORY_DAYS`, migration 0004). 삭제 시간 선택지는 `worker/src/index.ts` 의 `EXPIRE_OPTIONS` · `GUEST_EXPIRE_MINUTES`.
 - 링크 정보: Supabase WSNS 프로젝트의 `sd_shares`, `sd_files`. 브라우저는 직접 접근할 수 없고(RLS + 권한 회수) Worker 가 secret 키로만 읽고 씁니다.
 - 받는 사람 비밀번호는 PBKDF2 해시로 저장하고, 맞으면 12시간짜리 서명 쿠키를 줍니다. 틀린 시도는 Cloudflare Rate Limiting(분당 10회)으로 막습니다.
 - 한글 렌더러 WASM 은 28MB 라 Cloudflare 정적 파일 한도(25MB)를 넘습니다. 빌드할 때 gzip(약 10MB)으로 줄여 두고 Worker 가 `Content-Encoding: gzip` 으로 내보냅니다.

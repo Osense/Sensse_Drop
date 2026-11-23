@@ -40,6 +40,29 @@ export type DownloadItem = {
   size: number | null;
 };
 
+/** 내 배포 기록 한 줄 (worker ShareSummary 와 같음) */
+export type ShareSummary = {
+  id: string;
+  title: string;
+  message: string;
+  url: string;
+  createdAt: string;
+  expiresAt: string;
+  closedAt: string | null;
+  /** open: 받을 수 있음 · closed: 직접 닫음 · expired: 정한 시간이 지남 */
+  state: "open" | "closed" | "expired";
+  /** 파일을 이미 지웠는지 */
+  purged: boolean;
+  /** 기록이 저절로 지워지는 시각 */
+  forgetAt: string | null;
+  member: boolean;
+  opens: number;
+  downloads: number;
+  /** 지금 차지하는 저장 공간 */
+  bytes: number;
+  files: { id: string; name: string; ext: string; size: number; downloads: number }[];
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -64,7 +87,7 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 /** 이 기기에서 만든 링크 (비회원 관리용 토큰 보관) */
-export type LocalLink = { id: string; adminToken: string; title: string; createdAt: string };
+export type LocalLink = { id: string; adminToken: string; title: string; createdAt: string; expiresAt?: string };
 const KEY = "sensedrop.links";
 
 export const localLinks = {

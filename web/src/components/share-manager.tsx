@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import QRCode from "qrcode";
-import { Check, Copy, ExternalLink, RotateCw, Trash2 } from "lucide-react";
+import { Check, Copy, ExternalLink, Lock, RotateCw } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { StatusPill } from "@/components/status-pill";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -78,9 +78,10 @@ export function ShareManager({
     setTimeout(() => setCopied(null), 1600);
   }
 
+  /** 지금 닫기: 받는 사람은 더 이상 못 열고 파일은 바로 지움. 기록은 '배포 기록'에 30일 남음 */
   async function remove() {
-    if (!confirm("이 링크와 올린 파일을 모두 지울까요? 받는 사람도 더 이상 받을 수 없어요.")) return;
-    await api(`/api/shares/${id}`, { method: "DELETE", headers: await headers() }).catch(() => {});
+    if (!confirm("이 링크를 지금 닫을까요? 받는 사람은 더 이상 열 수 없고, 올린 파일은 바로 지워져요.")) return;
+    await api(`/api/shares/${id}/close`, { method: "POST", headers: await headers() }).catch(() => {});
     onDeleted?.();
   }
 
@@ -211,7 +212,7 @@ export function ShareManager({
         />
         <div className="mt-5 flex justify-end">
           <button onClick={remove} className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-destructive hover:text-destructive")}>
-            <Trash2 /> 링크 지우기
+            <Lock /> 지금 닫기
           </button>
         </div>
       </div>

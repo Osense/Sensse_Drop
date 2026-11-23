@@ -1,13 +1,24 @@
-import type { Env, FileRow, OwnerShareSummary, ShareRow, ShareWithFiles } from "./types";
+import type { Env, FileRow, ShareRow, ShareWithFiles } from "./types";
+
+/** 닫힌 링크의 기록을 남겨 두는 기간 */
+export const HISTORY_DAYS = 30;
 
 /** 공유 링크 저장소. 운영은 Supabase(WSNS 프로젝트), 개발은 메모리 */
 export interface Db {
   createShare(share: ShareRow, files: FileRow[]): Promise<void>;
   getShare(id: string): Promise<ShareWithFiles | null>;
   updateFile(shareId: string, fileId: string, patch: Partial<FileRow>): Promise<void>;
+  updateShare(id: string, patch: Partial<ShareRow>): Promise<void>;
   deleteShare(id: string): Promise<void>;
-  listOwnerShares(ownerId: string): Promise<OwnerShareSummary[]>;
-  listExpired(limit: number): Promise<string[]>;
+  /** 회원의 링크 (닫힌 기록 포함, 최근 200개) */
+  listOwnerShares(ownerId: string): Promise<ShareWithFiles[]>;
+  getShares(ids: string[]): Promise<ShareWithFiles[]>;
+  countOpen(id: string): Promise<void>;
+  countDownload(shareId: string, fileId: string): Promise<void>;
+  /** 닫혔는데 파일을 아직 안 지운 링크 */
+  listToPurge(limit: number): Promise<string[]>;
+  /** 파일을 지운 지 HISTORY_DAYS 가 지난 기록 */
+  listStale(limit: number): Promise<string[]>;
 }
 
 class SupabaseDb implements Db {
@@ -53,29 +64,56 @@ class SupabaseDb implements Db {
     });
   }
 
+  async updateShare(id: string, patch: Partial<ShareRow>) {
+    await this.req(`sd_shares?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+      headers: { Prefer: "return=minimal" },
+    });
+  }
+
   async deleteShare(id: string) {
     await this.req(`sd_shares?id=eq.${encodeURIComponent(id)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
   }
 
   async listOwnerShares(ownerId: string) {
     const res = await this.req(
-      `sd_shares?owner_id=eq.${encodeURIComponent(ownerId)}&select=id,title,created_at,expires_at,files:sd_files(count)&order=created_at.desc&limit=100`,
+      `sd_shares?owner_id=eq.${encodeURIComponent(ownerId)}&select=*,files:sd_files(*)&files.order=position.asc&order=created_at.desc&limit=200`,
     );
-    const rows = (await res.json()) as { id: string; title: string; created_at: string; expires_at: string; files: { count: number }[] }[];
-    return rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      createdAt: r.created_at,
-      expiresAt: r.expires_at,
-      fileCount: r.files?.[0]?.count ?? 0,
-    }));
+    return (await res.json()) as ShareWithFiles[];
   }
 
-  async listExpired(limit: number) {
+  async getShares(ids: string[]) {
+    if (ids.length === 0) return [];
+    const list = ids.map((i) => encodeURIComponent(i)).join(",");
+    const res = await this.req(`sd_shares?id=in.(${list})&select=*,files:sd_files(*)&files.order=position.asc`);
+    return (await res.json()) as ShareWithFiles[];
+  }
+
+  private async rpc(fn: string, args: Record<string, string>) {
+    await this.req(`rpc/${fn}`, { method: "POST", body: JSON.stringify(args) });
+  }
+
+  async countOpen(id: string) {
+    await this.rpc("sd_count_open", { p_share: id });
+  }
+
+  async countDownload(shareId: string, fileId: string) {
+    await this.rpc("sd_count_download", { p_share: shareId, p_file: fileId });
+  }
+
+  async listToPurge(limit: number) {
     const now = new Date().toISOString();
-    const res = await this.req(`sd_shares?expires_at=lt.${encodeURIComponent(now)}&select=id&limit=${limit}`);
+    const res = await this.req(`sd_shares?expires_at=lt.${encodeURIComponent(now)}&purged_at=is.null&select=id&limit=${limit}`);
     return ((await res.json()) as { id: string }[]).map((r) => r.id);
   }
+
+  async listStale(limit: number) {
+    const before = new Date(Date.now() - HISTORY_DAYS * 86400000).toISOString();
+    const res = await this.req(`sd_shares?purged_at=lt.${encodeURIComponent(before)}&select=id&limit=${limit}`);
+    return ((await res.json()) as { id: string }[]).map((r) => r.id);
+  }
+
 }
 
 /** 개발용 메모리 DB (wrangler dev 에서 SUPABASE_SECRET_KEY 가 없을 때) */
@@ -92,18 +130,34 @@ class MemoryDb implements Db {
     const f = mem.get(shareId)?.files.find((x) => x.id === fileId);
     if (f) Object.assign(f, patch);
   }
+  async updateShare(id: string, patch: Partial<ShareRow>) {
+    const s = mem.get(id);
+    if (s) Object.assign(s, patch);
+  }
   async deleteShare(id: string) {
     mem.delete(id);
   }
   async listOwnerShares(ownerId: string) {
-    return [...mem.values()]
-      .filter((s) => s.owner_id === ownerId)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .map((s) => ({ id: s.id, title: s.title, createdAt: s.created_at, expiresAt: s.expires_at, fileCount: s.files.length }));
+    return structuredClone([...mem.values()].filter((s) => s.owner_id === ownerId).sort((a, b) => b.created_at.localeCompare(a.created_at)));
   }
-  async listExpired(limit: number) {
+  async getShares(ids: string[]) {
+    return structuredClone(ids.map((i) => mem.get(i)).filter((s): s is ShareWithFiles => Boolean(s)));
+  }
+  async countOpen(id: string) {
+    const s = mem.get(id);
+    if (s) s.open_count = (s.open_count ?? 0) + 1;
+  }
+  async countDownload(shareId: string, fileId: string) {
+    const f = mem.get(shareId)?.files.find((x) => x.id === fileId);
+    if (f) f.download_count = (f.download_count ?? 0) + 1;
+  }
+  async listToPurge(limit: number) {
     const now = Date.now();
-    return [...mem.values()].filter((s) => Date.parse(s.expires_at) < now).slice(0, limit).map((s) => s.id);
+    return [...mem.values()].filter((s) => Date.parse(s.expires_at) < now && !s.purged_at).slice(0, limit).map((s) => s.id);
+  }
+  async listStale(limit: number) {
+    const before = Date.now() - HISTORY_DAYS * 86400000;
+    return [...mem.values()].filter((s) => s.purged_at && Date.parse(s.purged_at) < before).slice(0, limit).map((s) => s.id);
   }
 }
 

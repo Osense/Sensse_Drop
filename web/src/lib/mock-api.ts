@@ -26,6 +26,7 @@ type MockFile = {
   error: string | null;
   pdfSize: number | null;
   originalUploaded: boolean;
+  downloads?: number;
 };
 type MockShare = {
   id: string;
@@ -37,6 +38,9 @@ type MockShare = {
   member: boolean;
   createdAt: string;
   expiresAt: string;
+  closedAt?: string | null;
+  purgedAt?: string | null;
+  openCount?: number;
   files: MockFile[];
 };
 
@@ -80,6 +84,24 @@ async function removeShare(id: string) {
   await tx("blobs", "readwrite", (s) => s.delete(IDBKeyRange.bound(`${id}/`, `${id}/￿`)));
 }
 const blobKey = (id: string, fid: string, kind: string) => `${id}/${fid}/${kind}`;
+const removeBlobs = (id: string) => tx("blobs", "readwrite", (s) => s.delete(IDBKeyRange.bound(`${id}/`, `${id}/￿`)));
+
+/** 기록을 남겨 두는 기간 (worker 의 HISTORY_DAYS 와 같음) */
+const HISTORY_DAYS = 30;
+
+/** worker 의 Cron 정리와 같은 일: 닫힌 링크의 파일을 지우고, 오래된 기록은 통째로 지움 */
+let lastSweep = 0;
+async function sweep() {
+  if (Date.now() - lastSweep < 5000) return;
+  lastSweep = Date.now();
+  for (const s of await allShares()) {
+    if (s.purgedAt && Date.parse(s.purgedAt) < Date.now() - HISTORY_DAYS * 86400000) await removeShare(s.id);
+    else if (!s.purgedAt && Date.parse(s.expiresAt) < Date.now()) {
+      await removeBlobs(s.id);
+      await putShare({ ...s, purgedAt: new Date().toISOString() });
+    }
+  }
+}
 
 // ---------- 규칙 (worker 와 같음) ----------
 const needsPdf = (s: MockShare, f: MockFile) => f.ext === "pdf" || (isHangul(f.ext) && s.output !== "original");
@@ -90,7 +112,34 @@ const rid = (n: number) => {
   const abc = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
   return Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => abc[b % abc.length]).join("");
 };
-const expired = (s: MockShare) => Date.parse(s.expiresAt) < Date.now();
+const expired = (s: MockShare) => Boolean(s.closedAt) || Date.parse(s.expiresAt) < Date.now();
+
+function stored(s: MockShare, f: MockFile) {
+  return (needsPdf(s, f) ? (f.pdfSize ?? 0) : 0) + (needsOriginal(s, f) && f.originalUploaded ? f.size : 0);
+}
+
+/** 내 배포 기록 한 줄 (worker summarize 와 같은 모양) */
+function summary(s: MockShare) {
+  const state = s.closedAt ? "closed" : Date.parse(s.expiresAt) < Date.now() ? "expired" : "open";
+  const files = s.files.map((f) => ({ id: f.id, name: f.name, ext: f.ext, size: f.size, downloads: f.downloads ?? 0 }));
+  return {
+    id: s.id,
+    title: s.title,
+    message: s.message,
+    url: shareUrl(s.id),
+    createdAt: s.createdAt,
+    expiresAt: s.expiresAt,
+    closedAt: s.closedAt ?? null,
+    state,
+    purged: Boolean(s.purgedAt),
+    forgetAt: s.purgedAt ? new Date(Date.parse(s.purgedAt) + HISTORY_DAYS * 86400000).toISOString() : null,
+    member: s.member,
+    opens: s.openCount ?? 0,
+    downloads: files.reduce((n, f) => n + f.downloads, 0),
+    bytes: state === "open" && !s.purgedAt ? s.files.reduce((n, f) => n + stored(s, f), 0) : 0,
+    files,
+  };
+}
 const shareUrl = (id: string) => `${location.origin}${BASE_PATH}/s/?id=${id}`;
 const AUTH_KEY = (id: string) => `sensedrop.mock.auth.${id}`;
 
@@ -128,6 +177,7 @@ async function manageable(id: string, init?: RequestInit) {
 }
 async function viewable(id: string) {
   const s = await getShare(id);
+  if (s?.closedAt) throw new MockError("올린 분이 이 링크를 닫았어요.", 410);
   if (!s || expired(s)) throw new MockError("링크가 없거나 정한 시간이 지나 닫혔어요.", 404);
   return s;
 }
@@ -148,6 +198,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
   let m: RegExpExecArray | null;
   // 실제 서버처럼 조금 기다려요 (화면 흐름 확인용)
   await new Promise((r) => setTimeout(r, 120));
+  await sweep().catch(() => {});
 
   if (path === "/api/config") {
     return { ...LIMITS, expireOptions: EXPIRE_OPTIONS, guestExpireMinutes: [10], defaultExpireMinutes: { guest: 10, member: 4320 }, mock: true } as T;
@@ -188,7 +239,27 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
   if (path === "/api/me/shares") {
     if (!isMember(init)) throw new MockError("로그인이 필요해요.", 401);
     const list = (await allShares()).filter((s) => s.member).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return { shares: list.map((s) => ({ id: s.id, title: s.title, createdAt: s.createdAt, expiresAt: s.expiresAt, fileCount: s.files.length })) } as T;
+    return { shares: list.map(summary) } as T;
+  }
+
+  if (path === "/api/shares/lookup" && method === "POST") {
+    const links: { id: string; token: string }[] = Array.isArray((await body()).links) ? (await body()).links : [];
+    const out = [];
+    for (const l of links.slice(0, 60)) {
+      const s = await getShare(String(l.id));
+      if (s && s.adminToken === l.token) out.push(summary(s));
+    }
+    return { shares: out } as T;
+  }
+
+  if ((m = /^\/api\/shares\/(\w+)\/close$/.exec(path)) && method === "POST") {
+    const s = await manageable(m[1], init);
+    const now = new Date().toISOString();
+    if (!expired(s)) Object.assign(s, { closedAt: now, expiresAt: now });
+    await removeBlobs(s.id);
+    s.purgedAt = s.purgedAt ?? now;
+    await putShare(s);
+    return summary(s) as T;
   }
 
   if ((m = /^\/api\/shares\/(\w+)\/files\/(\w+)$/.exec(path)) && method === "PUT") {
@@ -242,6 +313,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
   if ((m = /^\/api\/s\/(\w+)\/auth$/.exec(path)) && method === "POST") {
     const s = await viewable(m[1]);
     if (String((await body()).password ?? "") !== s.password) throw new MockError("비밀번호가 틀렸어요.", 401);
+    await putShare({ ...s, openCount: (s.openCount ?? 0) + 1 });
     try {
       localStorage.setItem(AUTH_KEY(s.id), String(Date.now() + 12 * 3600 * 1000));
     } catch {}
@@ -263,6 +335,11 @@ export async function mockDownload(id: string, fileId: string, kind: "pdf" | "or
   if (!authed(s.id)) throw new MockError("비밀번호를 먼저 넣어 주세요.", 401);
   const blob = await tx<Blob | undefined>("blobs", "readonly", (st) => st.get(blobKey(id, fileId, kind)));
   if (!blob) throw new MockError("파일이 아직 올라오지 않았어요.", 404);
+  const f = s.files.find((x) => x.id === fileId);
+  if (f) {
+    f.downloads = (f.downloads ?? 0) + 1;
+    await putShare(s);
+  }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = name;

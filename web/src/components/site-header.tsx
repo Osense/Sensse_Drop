@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "보내기" },
-  { href: "/links/", label: "내 링크" },
+  { href: "/links/", label: "배포 기록" },
 ];
 
 export function SiteHeader() {

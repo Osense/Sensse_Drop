@@ -63,7 +63,7 @@ export function LoginView() {
                 <td className="font-semibold">10분~7일</td>
               </tr>
               <tr className="border-t">
-                <td className="px-4 py-2.5 text-left">내 링크 모아 보기</td>
+                <td className="px-4 py-2.5 text-left">배포 기록 모아 보기 · 바로 닫기</td>
                 <td className="text-muted-foreground">이 기기만</td>
                 <td>
                   <Check className="mx-auto size-4 text-brand" />

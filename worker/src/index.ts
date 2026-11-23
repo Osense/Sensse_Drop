@@ -7,8 +7,8 @@
  */
 import { ALLOWED_EXT, isHangul } from "./file-types";
 import { checkAccess, hashPassword, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
-import { getDb, getUserId, isDevMode, type Db } from "./db";
-import type { Env, FileRow, Output, ShareRow, ShareWithFiles } from "./types";
+import { getDb, getUserId, HISTORY_DAYS, isDevMode, type Db } from "./db";
+import type { Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
 
 const ACCESS_TTL_MS = 12 * 60 * 60 * 1000;
 const ALLOWED = new Set<string>(ALLOWED_EXT);
@@ -125,6 +125,43 @@ function downloadItems(share: ShareWithFiles) {
     }
   }
   return items;
+}
+
+/** 지금 R2에 남아 있는 바이트 */
+function storedBytes(share: ShareRow, f: FileRow) {
+  return (needsPdf(share, f) ? (f.pdf_size ?? 0) : 0) + (needsOriginal(share, f) && f.original_uploaded ? f.size : 0);
+}
+
+/** 내 배포 기록 한 줄 */
+function summarize(env: Env, request: Request, s: ShareWithFiles): ShareSummary {
+  const state: ShareSummary["state"] = s.closed_at ? "closed" : isExpired(s) ? "expired" : "open";
+  const files = s.files.map((f) => ({ id: f.id, name: f.original_name, ext: f.ext, size: f.size, downloads: f.download_count ?? 0 }));
+  return {
+    id: s.id,
+    title: s.title,
+    message: s.message ?? "",
+    url: `${baseUrl(env, request)}/s/${s.id}`,
+    createdAt: s.created_at,
+    expiresAt: s.expires_at,
+    closedAt: s.closed_at ?? null,
+    state,
+    purged: Boolean(s.purged_at),
+    forgetAt: s.purged_at ? new Date(Date.parse(s.purged_at) + HISTORY_DAYS * 86400000).toISOString() : null,
+    member: Boolean(s.owner_id),
+    opens: s.open_count ?? 0,
+    downloads: files.reduce((n, f) => n + f.downloads, 0),
+    bytes: state === "open" && !s.purged_at ? s.files.reduce((n, f) => n + storedBytes(s, f), 0) : 0,
+    files,
+  };
+}
+
+/** 링크를 닫고 파일을 바로 지움 (기록은 남김) */
+async function closeShare(env: Env, db: Db, share: ShareWithFiles) {
+  const now = new Date().toISOString();
+  if (!share.closed_at && !isExpired(share)) Object.assign(share, { closed_at: now, expires_at: now });
+  await removeShareFiles(env, share.id);
+  share.purged_at = share.purged_at ?? now;
+  await db.updateShare(share.id, { closed_at: share.closed_at ?? null, expires_at: share.expires_at, purged_at: share.purged_at });
 }
 
 /** RFC 6266: 한글 파일 이름이 깨지지 않게 */
@@ -254,11 +291,26 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ id, adminToken, url: `${baseUrl(env, request)}/s/${id}`, files: rows.map((r) => ({ id: r.id, name: r.original_name })) }, 201);
   }
 
-  // ---------- 회원: 내 링크 ----------
+  // ---------- 내 배포 기록 ----------
   if (path === "/api/me/shares" && method === "GET") {
     const userId = await getUserId(env, request);
     if (!userId) return fail(401, "로그인이 필요해요.");
-    return json({ shares: await db.listOwnerShares(userId) });
+    return json({ shares: (await db.listOwnerShares(userId)).map((s) => summarize(env, request, s)) });
+  }
+
+  // 이 기기에서 만든 링크 (관리 토큰으로 확인)
+  if (path === "/api/shares/lookup" && method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as { links?: { id?: string; token?: string }[] };
+    const links = (Array.isArray(body.links) ? body.links : [])
+      .filter((l) => typeof l?.id === "string" && /^[A-Za-z0-9]{8,16}$/.test(l.id) && typeof l.token === "string")
+      .slice(0, 60);
+    const rows = await db.getShares(links.map((l) => l.id!));
+    const out: ShareSummary[] = [];
+    for (const s of rows) {
+      const token = links.find((l) => l.id === s.id)?.token ?? "";
+      if (safeEqual(await sha256(token), s.admin_token_hash)) out.push(summarize(env, request, s));
+    }
+    return json({ shares: out });
   }
 
   // ---------- 링크 관리 ----------
@@ -335,6 +387,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ ok: true });
   }
 
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/close$/.exec(path)) && method === "POST") {
+    const share = await requireManager(env, db, request, m[1]);
+    if (share instanceof Response) return share;
+    await closeShare(env, db, share);
+    return json(summarize(env, request, share));
+  }
+
   if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})$/.exec(path)) && method === "DELETE") {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
@@ -346,6 +405,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   // ---------- 받는 사람 ----------
   if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})$/.exec(path)) && method === "GET") {
     const share = await db.getShare(m[1]);
+    if (share?.closed_at) return fail(410, "올린 분이 이 링크를 닫았어요.");
     if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
     return json({
       title: share.title,
@@ -366,6 +426,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     }
     const body = (await request.json().catch(() => ({}))) as { password?: string };
     if (!(await verifyPassword(String(body.password ?? ""), share.password_hash))) return fail(401, "비밀번호가 틀렸어요.");
+    await db.countOpen(share.id).catch(() => {});
     const value = await signAccess(secretOf(env), share.id, ACCESS_TTL_MS);
     const secure = url.protocol === "https:" ? "; Secure" : "";
     return json({ ok: true }, 200, {
@@ -389,6 +450,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (item.status !== "done") return fail(409, "아직 준비 중이에요.");
     const obj = await env.BUCKET.get(key(share.id, file.id, kind, file.ext));
     if (!obj) return fail(404, "파일을 찾을 수 없어요.");
+    await db.countDownload(share.id, file.id).catch(() => {});
     return new Response(obj.body, {
       headers: {
         "Content-Type": kind === "pdf" ? "application/pdf" : "application/octet-stream",
@@ -403,11 +465,24 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   return fail(404, "없는 주소예요.");
 }
 
-/** 만료된 링크와 파일 정리 (5분마다 Cron. 만료된 링크는 Cron 전에도 바로 열리지 않아요) */
+/**
+ * 정리 (5분마다 Cron. 시간이 지난 링크는 Cron 전에도 바로 열리지 않아요)
+ * 1) 닫힌 링크의 파일을 R2에서 지우고 purged_at 표시 → 기록(제목 · 파일 이름 · 횟수)만 남음
+ * 2) 파일을 지운 지 HISTORY_DAYS 가 지난 기록은 통째로 지움
+ */
 async function cleanup(env: Env) {
   const db = getDb(env);
   for (let round = 0; round < 5; round++) {
-    const ids = await db.listExpired(100);
+    const ids = await db.listToPurge(100);
+    if (ids.length === 0) break;
+    const now = new Date().toISOString();
+    for (const id of ids) {
+      await removeShareFiles(env, id);
+      await db.updateShare(id, { purged_at: now });
+    }
+  }
+  for (let round = 0; round < 5; round++) {
+    const ids = await db.listStale(100);
     if (ids.length === 0) break;
     for (const id of ids) {
       await removeShareFiles(env, id);
