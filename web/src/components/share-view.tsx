@@ -9,7 +9,6 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
-import { PointDown, PointSides } from "@/components/comic-arrows";
 import { STATIC_ONLY } from "@/lib/config";
 import { api, type DownloadItem } from "@/lib/api";
 import { extOf, formatDate, formatSize } from "@/lib/format";
@@ -99,8 +98,7 @@ export function ShareView() {
           </div>
         </div>
       )}
-      {/* 만화 같은 배경: 가장자리에 집중선 · 망점 */}
-      {(state === "login" || state === "list") && <div className="comic-bg" />}
+      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-72" />
       <div className="mx-auto max-w-lg px-4 py-8 sm:py-12">
         {state === "loading" && (
           <div className="grid place-items-center py-24 text-muted-foreground">
@@ -117,20 +115,16 @@ export function ShareView() {
 
         {info && (state === "login" || state === "list") && (
           <div className="mb-5 animate-fade-up">
-            <p className="text-sm font-bold text-brand">받을 자료</p>
-            <h1 className="mt-1.5 text-[clamp(1.9rem,8vw,2.75rem)] font-black leading-[1.15] tracking-tight [text-shadow:3px_3px_0_color-mix(in_oklch,var(--brand)_28%,transparent)]">
-              {info.title}
-            </h1>
+            <p className="text-sm font-semibold text-brand">받을 자료</p>
+            <h1 className="mt-1.5 text-[clamp(1.9rem,8vw,2.75rem)] font-extrabold leading-[1.15] tracking-tight">{info.title}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">받을 파일 {state === "list" ? items.length : info.fileCount}개</p>
           </div>
         )}
 
         {state === "login" && <ShareMessage text={info?.message} className="mb-4" />}
 
-        {state === "login" && <PointDown label="비밀번호를 넣으면 파일이 나와요!" className="mb-2" />}
-
         {state === "login" && (
-          <Card className="comic-box p-5 sm:p-6">
+          <Card className="p-5 sm:p-6">
             <form onSubmit={login} className="space-y-3">
               <label htmlFor="pw" className="flex items-center gap-2 font-semibold">
                 <Lock className="size-4 text-brand" /> 비밀번호를 넣어 주세요
@@ -156,9 +150,6 @@ export function ShareView() {
         {state === "list" && (
           <>
             <ShareMessage text={message} className="mb-4" />
-            {items.length > 0 && <PointDown label={items.length > 1 ? `여기 ${items.length}개 받아 가세요!` : "여기서 받아 가세요!"} className="mb-2" />}
-            <div className="relative">
-            {items.length > 0 && <PointSides />}
             <ul className="space-y-2.5">
               {items.map((item) => {
                 const ready = item.status === "done";
@@ -193,7 +184,7 @@ export function ShareView() {
                               }
                             : undefined
                         }
-                        className="comic-box flex min-h-16 items-center gap-3 rounded-xl bg-card p-3.5 transition-all hover:-translate-y-0.5 hover:bg-brand/5 active:translate-y-0.5"
+                        className="flex min-h-16 items-center gap-3 rounded-xl border bg-card p-3.5 shadow-sm transition-all hover:border-brand/50 hover:bg-brand/5 active:scale-[0.99]"
                       >
                         {body}
                       </a>
@@ -204,7 +195,6 @@ export function ShareView() {
                 );
               })}
             </ul>
-            </div>
             <p className="mt-4 text-center text-xs text-muted-foreground">파일을 누르면 바로 내려받아져요.</p>
           </>
         )}
