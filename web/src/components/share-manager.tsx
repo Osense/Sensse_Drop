@@ -148,7 +148,7 @@ export function ShareManager({
                 {copied === "msg" ? <Check /> : <Copy />}
                 {password ? "링크 + 비밀번호 복사" : "제목 + 링크 복사"}
               </Button>
-              <QrButtons onOpen={() => setQrOpen(true)} onSave={() => saveQrImage(share.url, share.title)} />
+              <QrButtons onOpen={() => setQrOpen(true)} onSave={() => saveQrImage(share.url, share.title, share.message)} />
               <a href={share.url} target="_blank" rel="noopener" className={buttonVariants({ variant: "outline", size: "sm" })}>
                 <ExternalLink /> 받는 화면 보기
               </a>
@@ -215,7 +215,7 @@ export function ShareManager({
           </button>
         </div>
       </div>
-      <QrViewer url={share.url} title={share.title} expiresAt={share.expiresAt} open={qrOpen} onClose={closeQr} />
+      <QrViewer url={share.url} title={share.title} message={share.message} expiresAt={share.expiresAt} open={qrOpen} onClose={closeQr} />
     </Card>
   );
 }
