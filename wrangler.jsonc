@@ -11,7 +11,7 @@
     "directory": "./web/out",
     "binding": "ASSETS",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/*", "!/_next/*", "!/brand/*"]
+    "run_worker_first": ["/*", "!/_next/*", "!/brand/*", "!/fonts/*"]
   },
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "sense-drop-files" }],
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } }],
