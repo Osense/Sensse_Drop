@@ -2,7 +2,9 @@
 
 import * as React from "react";
 import QRCode from "qrcode";
-import { Check, Copy, ExternalLink, Lock, RotateCw } from "lucide-react";
+import { Check, Copy, ExternalLink, Lock, RotateCw, Upload } from "lucide-react";
+import { uploadFile } from "@/lib/upload";
+import { isHangul } from "@/lib/file-types";
 import { FileBadge } from "@/components/file-badge";
 import { StatusPill } from "@/components/status-pill";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -89,18 +91,32 @@ export function ShareManager({
   const pickRef = React.useRef<HTMLInputElement>(null);
   const fixTarget = React.useRef<string | null>(null);
 
-  /** 실패한 파일: 같은 파일(또는 직접 만든 PDF)을 다시 골라 이 브라우저에서 바꿔 올리기 */
+  const [progress, setProgress] = React.useState<Record<string, number>>({});
+
+  /**
+   * 실패한 한글 파일: 같은 파일(또는 직접 만든 PDF)을 다시 골라 이 브라우저에서 바꿔 올리기.
+   * 올리다 끊긴 파일: 같은 파일을 다시 골라 이어 올리기 (큰 파일은 올린 조각 다음부터)
+   */
   async function reupload(file: File) {
     const fileId = fixTarget.current;
-    if (!fileId || !share) return;
+    const f = share?.files.find((x) => x.id === fileId);
+    if (!fileId || !share || !f) return;
     setFixing(fileId);
     try {
-      const pdf = /\.pdf$/i.test(file.name) ? file : await hwpToPdf(file);
-      await api(`/api/shares/${id}/files/${fileId}?kind=pdf`, {
-        method: "PUT",
-        headers: { ...(await headers()), "Content-Type": "application/octet-stream" },
-        body: pdf,
-      });
+      const h = await headers();
+      const onProgress = (r: number) => setProgress((p) => ({ ...p, [fileId]: r }));
+      if (f.status === "error") {
+        const pdf = /\.pdf$/i.test(file.name) ? file : await hwpToPdf(file);
+        await uploadFile({ shareId: id, fileId, kind: "pdf", blob: pdf, headers: h });
+      } else {
+        if (file.size !== f.size) throw new Error(`처음에 고른 파일과 크기가 달라요. '${f.name}'(${formatSize(f.size)})을 골라 주세요.`);
+        const hangul = isHangul(f.ext);
+        if (f.ext === "pdf") await uploadFile({ shareId: id, fileId, kind: "pdf", blob: file, name: file.name, headers: h, onProgress });
+        if (hangul && share.output !== "original" && f.pdfSize == null) await uploadFile({ shareId: id, fileId, kind: "pdf", blob: await hwpToPdf(file), headers: h });
+        if ((hangul && share.output !== "pdf") || (!hangul && f.ext !== "pdf")) {
+          await uploadFile({ shareId: id, fileId, kind: "original", blob: file, name: file.name, headers: h, onProgress });
+        }
+      }
     } catch (e) {
       alert((e as Error).message);
     } finally {
@@ -180,6 +196,20 @@ export function ShareManager({
                 )}
               </span>
               <StatusPill status={f.status} />
+              {fixing === f.id && progress[f.id] != null && <span className="text-xs tabular-nums text-brand">{Math.floor(progress[f.id] * 100)}%</span>}
+              {f.status === "uploading" && fixing !== f.id && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  title="같은 파일을 다시 골라 이어서 올려요"
+                  onClick={() => {
+                    fixTarget.current = f.id;
+                    pickRef.current?.click();
+                  }}
+                >
+                  <Upload /> 이어 올리기
+                </Button>
+              )}
               {f.status === "error" && (
                 <Button
                   variant="ghost"
@@ -203,7 +233,7 @@ export function ShareManager({
           ref={pickRef}
           type="file"
           hidden
-          accept=".hwp,.hwpx,.pdf"
+          accept={share.files.find((x) => x.id === fixTarget.current)?.status === "uploading" ? undefined : ".hwp,.hwpx,.pdf"}
           onChange={(e) => {
             const file = e.target.files?.[0];
             e.target.value = "";

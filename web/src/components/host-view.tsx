@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Eye, EyeOff, FileUp, Lock, Plus, Sparkles, X } from "lucide-react";
+import { Eye, EyeOff, FileUp, Lock, Plus, Sparkles, TriangleAlert, X } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
 import { StatusPill } from "@/components/status-pill";
@@ -13,27 +13,18 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { RadioCard } from "@/components/ui/radio-card";
-import { api, localLinks, type AppConfig } from "@/lib/api";
+import { api, ApiError, localLinks } from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
+import { periodLabel, sizeLabel, usePlan } from "@/lib/use-plan";
+import { Dialog } from "@/components/ui/dialog";
+import { ExpirePicker, fromLocalInput } from "@/components/expire-picker";
+import { formatDate } from "@/lib/format";
 import { hwpToPdf, preloadConverter } from "@/lib/convert";
 import { useAuth } from "@/lib/auth";
 import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
 import { FileNameInput } from "@/components/file-name-input";
-import { ExpirePicker } from "@/components/expire-picker";
 import { cn } from "@/lib/utils";
 import { ACCEPT, isAllowed, isHangul } from "@/lib/file-types";
-
-const DEFAULT_CONFIG: AppConfig = {
-  guest: { maxFiles: 2, maxFileMb: 5 },
-  member: { maxFiles: 10, maxFileMb: 20 },
-  expireOptions: [
-    { minutes: 10, label: "10분 후" },
-    { minutes: 60, label: "1시간 후" },
-    { minutes: 4320, label: "3일 후" },
-    { minutes: 10080, label: "7일 후" },
-  ],
-  guestExpireMinutes: [10],
-  defaultExpireMinutes: { guest: 10, member: 4320 },
-};
 
 const OUTPUTS = [
   { value: "pdf", title: "PDF로 보내기", desc: "받는 사람은 PDF만" },
@@ -46,9 +37,10 @@ type Created = { id: string; adminToken: string; password: string };
 
 export function HostView() {
   const auth = useAuth();
-  const member = Boolean(auth.session);
-  const [config, setConfig] = React.useState<AppConfig>(DEFAULT_CONFIG);
-  const limits = member ? config.member : config.guest;
+  const { config, plan: limits, me, refresh: refreshPlan } = usePlan();
+  const guest = limits.id === "guest";
+  const maxBytes = limits.maxFileMb == null ? Infinity : limits.maxFileMb * 1024 * 1024;
+  const left = me?.quotaBytes != null ? Math.max(0, me.quotaBytes - me.usedBytes) : null;
 
   const [files, setFiles] = React.useState<Picked[]>([]);
   const [output, setOutput] = React.useState<string>("pdf");
@@ -56,26 +48,17 @@ export function HostView() {
   const [message, setMessage] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPw, setShowPw] = React.useState(false);
-  const [pickedMinutes, setMinutes] = React.useState<number | null>(null);
-  // 비회원은 10분만. 고른 값이 없거나 쓸 수 없는 값이면 기본값으로.
-  const minutesAllowed = (m: number) => member || config.guestExpireMinutes.includes(m);
-  const minutes =
-    pickedMinutes != null && minutesAllowed(pickedMinutes)
-      ? pickedMinutes
-      : member
-        ? config.defaultExpireMinutes.member
-        : config.defaultExpireMinutes.guest;
+  const [picked, setPicked] = React.useState<number | "custom" | null>(null);
+  const [customAt, setCustomAt] = React.useState("");
+  // 고른 값이 없거나 이 요금제에서 쓸 수 없는 값이면 기본값으로.
+  const expire: number | "custom" =
+    picked === "custom" ? (limits.maxCustomMinutes > 0 ? "custom" : limits.defaultExpire) : picked != null && limits.expireMinutes.includes(picked) ? picked : limits.defaultExpire;
+  const [beyond, setBeyond] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [over, setOver] = React.useState(false);
   const [created, setCreated] = React.useState<Created | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
-
-  React.useEffect(() => {
-    api<AppConfig>("/api/config")
-      .then((c) => setConfig(c))
-      .catch(() => {});
-  }, []);
 
   function addFiles(list: FileList | File[]) {
     setNotice(null);
@@ -86,20 +69,20 @@ export function HostView() {
         setNotice(`이 형식은 올릴 수 없어요: ${file.name} (한글 · PDF · 오피스 문서 · 이미지 · 압축 · 음성 · 영상 가능)`);
         continue;
       }
-      if (file.size > limits.maxFileMb * 1024 * 1024) {
+      if (file.size > maxBytes) {
         setNotice(
-          member
-            ? `파일 하나는 ${limits.maxFileMb}MB까지예요: ${file.name}`
-            : `비회원은 파일 하나에 ${limits.maxFileMb}MB까지예요. 로그인하면 ${config.member.maxFileMb}MB까지 올릴 수 있어요.`,
+          guest
+            ? `나그네는 파일 하나에 ${limits.maxFileMb}MB까지예요. 로그인하면 ${config.plans.member.maxFileMb}MB까지 올릴 수 있어요.`
+            : `${limits.name}은 파일 하나에 ${sizeLabel(limits.maxFileMb)}까지예요: ${file.name}. 프로는 파일 크기 제한이 없어요.`,
         );
         continue;
       }
       if (next.some((p) => p.file.name === file.name && p.file.size === file.size)) continue;
       if (next.length >= limits.maxFiles) {
         setNotice(
-          member
-            ? `한 번에 ${limits.maxFiles}개까지 올릴 수 있어요.`
-            : `비회원은 한 번에 ${limits.maxFiles}개까지예요. 로그인하면 ${config.member.maxFiles}개까지 올릴 수 있어요.`,
+          guest
+            ? `나그네는 한 번에 ${limits.maxFiles}개까지예요. 로그인하면 ${config.plans.member.maxFiles}개까지 올릴 수 있어요.`
+            : `${limits.name}은 한 번에 ${limits.maxFiles}개까지 올릴 수 있어요.`,
         );
         break;
       }
@@ -114,11 +97,18 @@ export function HostView() {
     setFiles((prev) => prev.map((p) => (p.key === key ? { ...p, status, error, note } : p)));
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(e: React.FormEvent | null, acceptBeyondPlan = false) {
+    e?.preventDefault();
     setNotice(null);
+    setBeyond(null);
     if (files.length === 0) return setNotice("파일을 한 개 이상 올려 주세요.");
     if (password.length < 4) return setNotice("받는 사람 비밀번호를 4자 이상으로 정해 주세요.");
+    const pickedSize = files.reduce((n, p) => n + p.file.size, 0);
+    if (left != null && pickedSize > left) {
+      return setNotice(`${limits.name}은 열려 있는 링크의 파일을 합쳐 ${sizeLabel(limits.quotaMb)}까지 둘 수 있어요. 지금 ${formatSize(left)} 남았어요. 배포 기록에서 다 쓴 링크를 닫으면 자리가 생겨요.`);
+    }
+    const at = expire === "custom" ? fromLocalInput(customAt) : null;
+    if (expire === "custom" && !at) return setNotice("링크가 닫힐 시각을 정해 주세요.");
 
     setBusy(true);
     try {
@@ -131,7 +121,8 @@ export function HostView() {
           message,
           password,
           output,
-          expireMinutes: minutes,
+          ...(at ? { expiresAt: at.toISOString() } : { expireMinutes: expire }),
+          acceptBeyondPlan,
           files: files.map((p) => ({ name: displayName(p.label, p.file.name), size: p.file.size })),
         }),
       });
@@ -146,11 +137,15 @@ export function HostView() {
         const needsPdf = isHangul(ext) && output !== "original";
         const needsOriginal = isHangul(ext) ? output !== "pdf" : ext !== "pdf";
         const put = (kind: "pdf" | "original", body: Blob) =>
-          api<{ status: Picked["status"] }>(`/api/shares/${res.id}/files/${fileId}?kind=${kind}`, {
-            method: "PUT",
-            headers: { "X-Admin-Token": res.adminToken, "Content-Type": "application/octet-stream" },
-            body,
-          });
+          uploadFile({
+            shareId: res.id,
+            fileId,
+            kind,
+            blob: body,
+            name: p.file.name,
+            headers: { "X-Admin-Token": res.adminToken },
+            onProgress: (r) => body.size > 8 * 1024 * 1024 && setStatus(p.key, "uploading", undefined, `${Math.floor(r * 100)}%`),
+          }).then((status) => ({ status }));
         try {
           let status: Picked["status"] = "uploading";
           if (needsPdf) {
@@ -184,8 +179,11 @@ export function HostView() {
         }
       }
       setCreated({ id: res.id, adminToken: res.adminToken, password });
+      refreshPlan();
     } catch (err) {
-      setNotice((err as Error).message);
+      const data = (err as ApiError).data;
+      if (data?.code === "beyond_plan") setBeyond(String(data.proUntil ?? ""));
+      else setNotice((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -198,7 +196,8 @@ export function HostView() {
     setMessage("");
     setPassword("");
     setOutput("pdf");
-    setMinutes(null);
+    setPicked(null);
+    setCustomAt("");
   }
 
   const headersFor = React.useCallback(async (): Promise<Record<string, string>> => {
@@ -231,15 +230,19 @@ export function HostView() {
           </p>
         </div>
 
-        <form onSubmit={submit} className="space-y-4" autoComplete="off">
+        {me?.lapse && <LapseBanner lapse={me.lapse} />}
+
+        <form onSubmit={(e) => submit(e)} className="space-y-4" autoComplete="off">
           <Card className="p-5 sm:p-6">
             <Step n={1} title="자동 삭제 시간" />
             <ExpirePicker
               options={config.expireOptions}
-              value={minutes}
-              isAllowed={minutesAllowed}
-              onChange={setMinutes}
-              member={member}
+              plan={limits}
+              value={expire}
+              customAt={customAt}
+              onChange={setPicked}
+              onCustomAt={setCustomAt}
+              minCustomMinutes={config.minCustomMinutes}
               disabled={busy}
             />
           </Card>
@@ -271,7 +274,8 @@ export function HostView() {
               </span>
               <span className="font-semibold">눌러서 고르거나 끌어다 놓으세요</span>
               <span className="text-xs text-muted-foreground">
-                한글 · PDF · 오피스 · 이미지 등 · 최대 {limits.maxFiles}개 · 파일당 {limits.maxFileMb}MB
+                한글 · PDF · 오피스 · 이미지 · 영상 등 · 최대 {limits.maxFiles}개 · 파일당 {limits.maxFileMb == null ? "크기 제한 없음" : sizeLabel(limits.maxFileMb)}
+                {left != null && ` · 남은 공간 ${formatSize(left)}`}
               </span>
             </div>
             <input
@@ -299,7 +303,12 @@ export function HostView() {
                         onChange={(v) => setFiles((prev) => prev.map((x) => (x.key === p.key ? { ...x, label: v } : x)))}
                       />
                       <span className={cn("block truncate text-xs", p.error ? "text-destructive" : "text-muted-foreground")}>
-                        {p.error || (p.note && p.status === "converting" ? `PDF로 바꾸는 중 · ${p.note}` : formatSize(p.file.size))}
+                        {p.error ||
+                          (p.note && p.status === "converting"
+                            ? `PDF로 바꾸는 중 · ${p.note}`
+                            : p.note && p.status === "uploading"
+                              ? `${formatSize(p.file.size)} · 올리는 중 ${p.note}`
+                              : formatSize(p.file.size))}
                       </span>
                     </span>
                     {busy || p.status !== "waiting" ? (
@@ -323,14 +332,25 @@ export function HostView() {
               <p className="mt-2 text-xs text-muted-foreground">파일 이름을 누르면 받는 사람에게 보일 이름을 바꿀 수 있어요.</p>
             )}
 
-            {!member && auth.ready && (
+            {guest && auth.ready && (
               <div className="mt-3 flex items-center gap-2 rounded-lg bg-brand/5 px-3 py-2.5 text-sm">
                 <Sparkles className="size-4 shrink-0 text-brand" />
                 <span className="flex-1 text-muted-foreground">
-                  로그인하면 <b className="text-foreground">{config.member.maxFiles}개 · 파일당 {config.member.maxFileMb}MB</b>까지 올릴 수 있어요.
+                  로그인하면 무료 멤버십으로 <b className="text-foreground">{config.plans.member.maxFiles}개 · 파일당 {sizeLabel(config.plans.member.maxFileMb)} · {periodLabel(config.plans.member.maxCustomMinutes)}</b>까지 올릴 수 있어요.
                 </span>
                 <Link href="/login/" className="shrink-0 font-semibold text-brand">
                   로그인
+                </Link>
+              </div>
+            )}
+            {limits.id === "member" && files.some((p) => p.file.size > maxBytes * 0.5) && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg bg-brand/5 px-3 py-2.5 text-sm">
+                <Sparkles className="size-4 shrink-0 text-brand" />
+                <span className="flex-1 text-muted-foreground">
+                  큰 파일을 자주 보내면 <b className="text-foreground">프로</b>가 편해요. 파일 크기 제한 없이 {sizeLabel(config.plans.pro.quotaMb)}까지, 1년 보관.
+                </span>
+                <Link href="/plans/" className="shrink-0 font-semibold text-brand">
+                  요금제
                 </Link>
               </div>
             )}
@@ -406,9 +426,51 @@ export function HostView() {
         </form>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          <Wordmark /> · 무료 · 올린 파일은 정한 시간이 지나면 지워져요
+          <Wordmark /> · {limits.name} · 올린 파일은 정한 시간이 지나면 지워져요 ·{" "}
+          <Link href="/plans/" className="underline-offset-2 hover:underline">
+            요금제
+          </Link>
         </p>
+
+        <Dialog
+          open={beyond != null}
+          onClose={() => setBeyond(null)}
+          title="구독 기간 이후까지 배포돼요!"
+          description={
+            <>
+              프로 구독이 {beyond ? formatDate(beyond) : ""}에 끝나요. 고른 마감은 그보다 늦어요. 구독이 끝나고 {7}일 안에 갱신하지 않으면 멤버십 한도를 넘는 이 링크와 파일은 <b>영구 삭제</b>돼요.
+            </>
+          }
+        >
+          <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={() => setBeyond(null)}>
+              마감 다시 정하기
+            </Button>
+            <Button variant="brand" onClick={() => submit(null, true)}>
+              확인하고 만들기
+            </Button>
+          </div>
+        </Dialog>
       </div>
+    </div>
+  );
+}
+
+/** 프로가 곧 끝나거나 끝난 뒤 유예 중: 갱신하지 않으면 닫힐 링크 */
+export function LapseBanner({ lapse }: { lapse: { proUntil: string; closesAt: string; links: number } }) {
+  const ended = Date.parse(lapse.proUntil) < Date.now();
+  return (
+    <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+      <TriangleAlert className="mt-0.5 size-5 shrink-0 text-amber-600 dark:text-amber-400" />
+      <p className="flex-1">
+        <b>
+          프로가 {formatDate(lapse.proUntil)}에 {ended ? "끝났어요" : "끝나요"}. 갱신하지 않으면 {formatDate(lapse.closesAt)}에 링크 {lapse.links}개가 닫혀요.
+        </b>{" "}
+        멤버십 한도(파일당 20MB · 7일 · 1GB)를 넘는 링크는 닫히고 파일은 영구 삭제돼요.{" "}
+        <Link href="/plans/" className="font-semibold text-brand">
+          요금제 보기
+        </Link>
+      </p>
     </div>
   );
 }

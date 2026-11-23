@@ -13,6 +13,8 @@ import { useAuth } from "@/lib/auth";
 import { STATIC_ONLY } from "@/lib/config";
 import { formatDate, formatSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { usePlan } from "@/lib/use-plan";
+import { LapseBanner } from "@/components/host-view";
 
 /** 서버에 기록이 남아 있지 않은, 이 기기에만 적어 둔 링크 */
 type Gone = { id: string; title: string; createdAt: string; gone: true };
@@ -27,6 +29,7 @@ const isGone = (r: Row): r is Gone => "gone" in r;
  */
 export function LinksView() {
   const auth = useAuth();
+  const { me, refresh: refreshPlan } = usePlan();
   const [rows, setRows] = React.useState<Row[] | null>(null);
   const [open, setOpen] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<Filter>("all");
@@ -58,7 +61,8 @@ export function LinksView() {
     const found = new Set(mine.map((s) => s.id));
     const gone: Gone[] = ask.filter((l) => !found.has(l.id)).map((l) => ({ id: l.id, title: l.title, createdAt: l.createdAt, gone: true }));
     setRows([...server, ...mine, ...gone].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-  }, [auth]);
+    refreshPlan();
+  }, [auth, refreshPlan]);
 
   React.useEffect(() => {
     if (auth.ready) load();
@@ -140,10 +144,22 @@ export function LinksView() {
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Stat icon={<Link2 />} label="열려 있는 링크" value={rows ? `${live.length}개` : "–"} accent={live.length > 0} />
-        <Stat icon={<HardDrive />} label="쓰고 있는 용량" value={rows ? formatSize(used) || "0B" : "–"} />
+        <Stat
+          icon={<HardDrive />}
+          label="쓰고 있는 용량"
+          value={rows ? formatSize(used) || "0B" : "–"}
+          sub={me?.quotaBytes != null ? `/ ${formatSize(me.quotaBytes)}` : undefined}
+          ratio={me?.quotaBytes ? Math.min(1, (me.usedBytes || used) / me.quotaBytes) : undefined}
+        />
         <Stat icon={<Eye />} label="받는 화면 열람" value={rows ? `${opens}회` : "–"} />
         <Stat icon={<Download />} label="내려받기" value={rows ? `${downloads}회` : "–"} />
       </div>
+
+      {me?.lapse && (
+        <div className="mt-4">
+          <LapseBanner lapse={me.lapse} />
+        </div>
+      )}
 
       {lingering.length > 0 && (
         <div className="mt-4 flex flex-col gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 sm:flex-row sm:items-center">
@@ -299,14 +315,22 @@ export function LinksView() {
   );
 }
 
-function Stat({ icon, label, value, accent }: { icon: React.ReactNode; label: string; value: string; accent?: boolean }) {
+function Stat({ icon, label, value, accent, sub, ratio }: { icon: React.ReactNode; label: string; value: string; accent?: boolean; sub?: string; ratio?: number }) {
   return (
     <Card className={cn("gap-0 p-3.5 [&_svg]:size-4", accent && "border-brand/40 bg-brand/5")}>
       <span className={cn("flex items-center gap-1.5 text-xs font-medium text-muted-foreground", accent && "text-brand")}>
         {icon}
         {label}
       </span>
-      <span className="mt-1 text-xl font-extrabold tabular-nums tracking-tight">{value}</span>
+      <span className="mt-1 text-xl font-extrabold tabular-nums tracking-tight">
+        {value}
+        {sub && <span className="ml-1 text-xs font-medium text-muted-foreground">{sub}</span>}
+      </span>
+      {ratio != null && (
+        <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-gradient-to-r from-brand to-brand-2" style={{ width: `${Math.max(2, ratio * 100)}%` }} />
+        </span>
+      )}
     </Card>
   );
 }

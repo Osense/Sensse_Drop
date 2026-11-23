@@ -54,6 +54,10 @@ export interface ShareRow {
   purged_at?: string | null;
   /** 비밀번호를 넣고 들어온 횟수 */
   open_count?: number;
+  /** 링크를 만들 때의 요금제 */
+  plan?: "guest" | "member" | "pro";
+  /** 만든 회원이 탈퇴한 시각 */
+  orphaned_at?: string | null;
 }
 
 export interface ShareWithFiles extends ShareRow {

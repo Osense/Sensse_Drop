@@ -14,6 +14,11 @@ export interface Db {
   listOwnerShares(ownerId: string): Promise<ShareWithFiles[]>;
   getShares(ids: string[]): Promise<ShareWithFiles[]>;
   countOpen(id: string): Promise<void>;
+  /** 프로 이용 기간 (없으면 null) */
+  getPlan(userId: string): Promise<{ plan: "pro"; expires_at: string } | null>;
+  /** 유예가 끝났는데 아직 정리하지 않은 프로 (user_id, expires_at) */
+  listLapsedPro(before: string, limit: number): Promise<{ user_id: string; expires_at: string }[]>;
+  markEnforced(userId: string): Promise<void>;
   countDownload(shareId: string, fileId: string): Promise<void>;
   /** 닫혔는데 파일을 아직 안 지운 링크 */
   listToPurge(limit: number): Promise<string[]>;
@@ -98,6 +103,24 @@ class SupabaseDb implements Db {
     await this.rpc("sd_count_open", { p_share: id });
   }
 
+  async listLapsedPro(before: string, limit: number) {
+    const res = await this.req(`sd_plans?expires_at=lt.${encodeURIComponent(before)}&enforced_at=is.null&select=user_id,expires_at&limit=${limit}`);
+    return (await res.json()) as { user_id: string; expires_at: string }[];
+  }
+
+  async markEnforced(userId: string) {
+    await this.req(`sd_plans?user_id=eq.${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enforced_at: new Date().toISOString() }),
+      headers: { Prefer: "return=minimal" },
+    });
+  }
+
+  async getPlan(userId: string) {
+    const res = await this.req(`sd_plans?user_id=eq.${encodeURIComponent(userId)}&select=plan,expires_at`);
+    return ((await res.json()) as { plan: "pro"; expires_at: string }[])[0] ?? null;
+  }
+
   async countDownload(shareId: string, fileId: string) {
     await this.rpc("sd_count_download", { p_share: shareId, p_file: fileId });
   }
@@ -110,11 +133,16 @@ class SupabaseDb implements Db {
 
   async listStale(limit: number) {
     const before = new Date(Date.now() - HISTORY_DAYS * 86400000).toISOString();
-    const res = await this.req(`sd_shares?purged_at=lt.${encodeURIComponent(before)}&select=id&limit=${limit}`);
+    // 30일 지난 기록, 그리고 탈퇴한 회원의 기록은 파일을 지운 즉시
+    const res = await this.req(
+      `sd_shares?or=(purged_at.lt.${encodeURIComponent(before)},and(orphaned_at.not.is.null,purged_at.not.is.null))&select=id&limit=${limit}`,
+    );
     return ((await res.json()) as { id: string }[]).map((r) => r.id);
   }
 
 }
+
+const DEV_PRO = "00000000-0000-4000-8000-000000000002";
 
 /** 개발용 메모리 DB (wrangler dev 에서 SUPABASE_SECRET_KEY 가 없을 때) */
 const mem = new Map<string, ShareWithFiles>();
@@ -143,6 +171,13 @@ class MemoryDb implements Db {
   async getShares(ids: string[]) {
     return structuredClone(ids.map((i) => mem.get(i)).filter((s): s is ShareWithFiles => Boolean(s)));
   }
+  async listLapsedPro() {
+    return [];
+  }
+  async markEnforced() {}
+  async getPlan(userId: string) {
+    return userId === DEV_PRO ? { plan: "pro" as const, expires_at: new Date(Date.now() + 365 * 86400000).toISOString() } : null;
+  }
   async countOpen(id: string) {
     const s = mem.get(id);
     if (s) s.open_count = (s.open_count ?? 0) + 1;
@@ -157,7 +192,7 @@ class MemoryDb implements Db {
   }
   async listStale(limit: number) {
     const before = Date.now() - HISTORY_DAYS * 86400000;
-    return [...mem.values()].filter((s) => s.purged_at && Date.parse(s.purged_at) < before).slice(0, limit).map((s) => s.id);
+    return [...mem.values()].filter((s) => s.purged_at && (Date.parse(s.purged_at) < before || s.orphaned_at)).slice(0, limit).map((s) => s.id);
   }
 }
 
@@ -174,7 +209,7 @@ export async function getUserId(env: Env, request: Request): Promise<string | nu
   const auth = request.headers.get("Authorization") || "";
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m) return null;
-  if (isDevMode(env)) return m[1] === "dev-member" ? "00000000-0000-4000-8000-000000000001" : null;
+  if (isDevMode(env)) return m[1] === "dev-member" ? "00000000-0000-4000-8000-000000000001" : m[1] === "dev-pro" ? DEV_PRO : null;
   const res = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
     headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${m[1]}` },
   });

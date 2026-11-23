@@ -8,7 +8,7 @@ export function SiteFooter() {
         <a href={WSNS_URL} aria-label="WSNS studio">
           <BrandLogo className="h-6" />
         </a>
-        <span>쎈스 시리즈 · 쎈스드롭은 무료예요.</span>
+        <span>쎈스 시리즈 · 쎈스드롭은 무료로 시작해요.</span>
         <a href={PRODUCT_URL} className="underline-offset-4 hover:underline sm:ml-auto">
           쎈스드롭 소개
         </a>

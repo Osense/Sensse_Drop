@@ -9,6 +9,7 @@ import { ALLOWED_EXT, isHangul } from "./file-types";
 import { checkAccess, hashPassword, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
 import { getDb, getUserId, HISTORY_DAYS, isDevMode, type Db } from "./db";
 import type { Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
+import { EXPIRE_OPTIONS, MIN_CUSTOM_MINUTES, MULTIPART_THRESHOLD, PART_SIZE, PLANS, PRO_GRACE_DAYS, type Plan, type PlanId } from "./plans";
 
 const ACCESS_TTL_MS = 12 * 60 * 60 * 1000;
 const ALLOWED = new Set<string>(ALLOWED_EXT);
@@ -17,18 +18,61 @@ const OUTPUTS = new Set<Output>(["pdf", "original", "both"]);
 const PDF_SIZE_FACTOR = 4;
 const MAX_BODY_BYTES = 95 * 1024 * 1024; // Workers 요청 본문 한도(100MB) 안쪽
 
-type Limits = { maxFiles: number; maxFileMb: number };
-
-function num(v: string | undefined, fallback: number) {
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+/** 회원의 요금제: 로그인 안 함 → 나그네, sd_plans 에 기간이 남은 프로 → 프로, 그 밖 → 멤버십 */
+async function planOf(db: Db, userId: string | null): Promise<{ plan: Plan; proUntil: string | null }> {
+  if (!userId) return { plan: PLANS.guest, proUntil: null };
+  const row = await db.getPlan(userId).catch(() => null);
+  if (row && Date.parse(row.expires_at) > Date.now()) return { plan: PLANS.pro, proUntil: row.expires_at };
+  return { plan: PLANS.member, proUntil: null };
 }
 
-function limitsFor(env: Env, member: boolean): Limits {
-  return member
-    ? { maxFiles: num(env.MEMBER_MAX_FILES, 10), maxFileMb: num(env.MEMBER_MAX_FILE_MB, 20) }
-    : { maxFiles: num(env.GUEST_MAX_FILES, 2), maxFileMb: num(env.GUEST_MAX_FILE_MB, 5) };
+const planOfShare = (share: ShareRow): Plan => PLANS[(share.plan as PlanId) ?? (share.owner_id ? "member" : "guest")] ?? PLANS.member;
+
+/** 파일 하나가 차지할(차지하는) 자리: 아직 안 올라왔으면 처음 알린 크기로 잡아 둡니다 */
+function reservedBytes(share: ShareRow, f: FileRow) {
+  return (needsPdf(share, f) ? (f.pdf_size ?? f.size) : 0) + (needsOriginal(share, f) ? f.size : 0);
 }
+
+/** 열려 있는 링크들이 차지하는 저장 공간 (동시 보관 총량 계산용) */
+async function usageOf(db: Db, userId: string) {
+  const shares = await db.listOwnerShares(userId);
+  return shares
+    .filter((s) => !isExpired(s) && !s.purged_at)
+    .reduce((n, s) => n + s.files.reduce((m, f) => m + reservedBytes(s, f), 0), 0);
+}
+
+const MB = 1048576;
+const DAY = 86400000;
+
+/**
+ * 프로가 끝나고 유예(PRO_GRACE_DAYS)가 지나면 닫힐 링크.
+ * 프로로 만든 열린 링크 중 멤버십 한도(파일 수 · 파일 크기 · 유예 끝 + 7일보다 먼 마감)를 넘는 것,
+ * 그리고 남은 링크를 합쳐 멤버십 동시 보관 총량을 넘으면 최근 것부터.
+ */
+function sharesToClose(shares: ShareWithFiles[], proUntil: string): ShareWithFiles[] {
+  const m = PLANS.member;
+  const graceEnd = Date.parse(proUntil) + PRO_GRACE_DAYS * DAY;
+  const open = shares.filter((s) => !isExpired(s) && !s.purged_at).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const close: ShareWithFiles[] = [];
+  const keep: ShareWithFiles[] = [];
+  for (const s of open) {
+    const over =
+      s.plan === "pro" &&
+      (s.files.length > m.maxFiles ||
+        s.files.some((f) => m.maxFileMb != null && f.size > m.maxFileMb * MB) ||
+        Date.parse(s.expires_at) > graceEnd + m.maxCustomMinutes * 60000);
+    (over ? close : keep).push(s);
+  }
+  let total = keep.reduce((n, s) => n + s.files.reduce((k, f) => k + reservedBytes(s, f), 0), 0);
+  for (const s of keep) {
+    if (total <= (m.quotaMb ?? Infinity) * MB) break;
+    if (s.plan !== "pro") continue;
+    close.push(s);
+    total -= s.files.reduce((k, f) => k + reservedBytes(s, f), 0);
+  }
+  return close;
+}
+const sizeLabel = (mb: number) => (mb >= 1024 ? `${Math.round(mb / 102.4) / 10}GB` : `${mb}MB`);
 
 function json(data: unknown, status = 200, headers: HeadersInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -68,15 +112,6 @@ function secretOf(env: Env) {
   return env.SESSION_SECRET || env.SUPABASE_SECRET_KEY || "sense-drop-dev-secret";
 }
 
-/** 삭제 시간 선택지 (분) */
-const EXPIRE_OPTIONS = [
-  { minutes: 10, label: "10분 후" },
-  { minutes: 60, label: "1시간 후" },
-  { minutes: 3 * 1440, label: "3일 후" },
-  { minutes: 7 * 1440, label: "7일 후" },
-];
-const GUEST_EXPIRE_MINUTES = [10];
-const MEMBER_DEFAULT_EXPIRE = 3 * 1440;
 
 function isExpired(share: ShareRow) {
   return Date.parse(share.expires_at) < Date.now();
@@ -164,6 +199,22 @@ async function closeShare(env: Env, db: Db, share: ShareWithFiles) {
   await db.updateShare(share.id, { closed_at: share.closed_at ?? null, expires_at: share.expires_at, purged_at: share.purged_at });
 }
 
+/** 파일이 R2에 다 올라온 뒤 상태 기록 */
+async function markUploaded(db: Db, share: ShareWithFiles, file: FileRow, kind: "pdf" | "original", size: number) {
+  const next: FileRow = { ...file };
+  if (kind === "pdf") Object.assign(next, { pdf_size: size, error: null });
+  else next.original_uploaded = true;
+  if (next.status === "error" && kind === "pdf") next.status = "uploading";
+  next.status = computeStatus(share, next);
+  await db.updateFile(share.id, file.id, {
+    pdf_size: next.pdf_size,
+    original_uploaded: next.original_uploaded,
+    status: next.status,
+    error: next.error,
+  });
+  return next.status;
+}
+
 /** RFC 6266: 한글 파일 이름이 깨지지 않게 */
 function contentDisposition(name: string) {
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
@@ -210,60 +261,116 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   // ---------- 설정 ----------
   if (path === "/api/config" && method === "GET") {
     return json({
-      guest: limitsFor(env, false),
-      member: limitsFor(env, true),
+      plans: PLANS,
       expireOptions: EXPIRE_OPTIONS,
-      guestExpireMinutes: GUEST_EXPIRE_MINUTES,
-      defaultExpireMinutes: { guest: GUEST_EXPIRE_MINUTES[0], member: MEMBER_DEFAULT_EXPIRE },
+      minCustomMinutes: MIN_CUSTOM_MINUTES,
+      multipartThreshold: MULTIPART_THRESHOLD,
+      partSize: PART_SIZE,
       devMode: isDevMode(env),
+    });
+  }
+
+  // ---------- 내 요금제 · 쓰는 용량 ----------
+  if (path === "/api/me" && method === "GET") {
+    const userId = await getUserId(env, request);
+    if (!userId) return fail(401, "로그인이 필요해요.");
+    const { plan, proUntil } = await planOf(db, userId);
+    // 끝난 지 유예 안쪽인 프로, 또는 7일 안에 끝나는 프로: 갱신하지 않으면 닫힐 링크 수
+    const last = proUntil ? { expires_at: proUntil } : await db.getPlan(userId).catch(() => null);
+    let lapse: { proUntil: string; closesAt: string; links: number } | null = null;
+    if (last) {
+      const end = Date.parse(last.expires_at);
+      const closesAt = end + PRO_GRACE_DAYS * DAY;
+      if (end - Date.now() < PRO_GRACE_DAYS * DAY && closesAt > Date.now()) {
+        const n = sharesToClose(await db.listOwnerShares(userId), last.expires_at).length;
+        if (n > 0) lapse = { proUntil: last.expires_at, closesAt: new Date(closesAt).toISOString(), links: n };
+      }
+    }
+    return json({
+      plan: plan.id,
+      proUntil,
+      lapse,
+      usedBytes: await usageOf(db, userId),
+      quotaBytes: plan.quotaMb == null ? null : plan.quotaMb * MB,
     });
   }
 
   // ---------- 링크 만들기 ----------
   if (path === "/api/shares" && method === "POST") {
     const userId = await getUserId(env, request);
-    const limits = limitsFor(env, Boolean(userId));
+    const { plan, proUntil } = await planOf(db, userId);
     const body = (await request.json().catch(() => null)) as {
       title?: string;
       message?: string;
       password?: string;
       output?: Output;
       expireMinutes?: number;
+      /** 마감 시각 직접 지정 (ISO) */
+      expiresAt?: string;
+      /** 프로 구독이 끝난 뒤까지 열리는 링크임을 확인했는지 */
+      acceptBeyondPlan?: boolean;
       files?: { name?: string; size?: number }[];
     } | null;
     if (!body) return fail(400, "요청 형식이 올바르지 않아요.");
 
     const files = Array.isArray(body.files) ? body.files : [];
     if (files.length === 0) return fail(400, "파일을 한 개 이상 올려 주세요.");
-    if (files.length > limits.maxFiles) {
-      return fail(400, userId ? `한 번에 ${limits.maxFiles}개까지 올릴 수 있어요.` : `비회원은 한 번에 ${limits.maxFiles}개까지예요. 로그인하면 더 올릴 수 있어요.`);
+    if (files.length > plan.maxFiles) {
+      return fail(400, plan.id === "guest" ? `나그네는 한 번에 ${plan.maxFiles}개까지예요. 로그인하면 더 올릴 수 있어요.` : `${plan.name}은 한 번에 ${plan.maxFiles}개까지 올릴 수 있어요.`);
     }
+    let total = 0;
     for (const f of files) {
       const ext = extOf(String(f.name ?? ""));
       if (!ALLOWED.has(ext)) return fail(400, `이 형식은 올릴 수 없어요: ${cleanName(f.name)}`);
       const size = Number(f.size);
       if (!Number.isFinite(size) || size < 0) return fail(400, "파일 크기가 올바르지 않아요.");
-      if (size > limits.maxFileMb * 1048576) {
-        return fail(400, userId ? `파일 하나는 ${limits.maxFileMb}MB까지예요.` : `비회원은 파일 하나에 ${limits.maxFileMb}MB까지예요. 로그인하면 더 큰 파일도 올릴 수 있어요.`);
+      if (plan.maxFileMb != null && size > plan.maxFileMb * MB) {
+        return fail(400, plan.id === "guest" ? `나그네는 파일 하나에 ${plan.maxFileMb}MB까지예요. 로그인하면 더 큰 파일도 올릴 수 있어요.` : `${plan.name}은 파일 하나에 ${plan.maxFileMb}MB까지예요. 프로는 파일 크기 제한이 없어요.`);
+      }
+      total += size * (isHangul(ext) && body.output === "both" ? 2 : 1);
+    }
+    if (userId && plan.quotaMb != null) {
+      const used = await usageOf(db, userId);
+      if (used + total > plan.quotaMb * MB) {
+        const left = Math.max(0, plan.quotaMb * MB - used);
+        return fail(400, `${plan.name}은 열려 있는 링크의 파일을 합쳐 ${sizeLabel(plan.quotaMb)}까지 둘 수 있어요. 지금 ${Math.floor(left / MB)}MB 남았어요. 배포 기록에서 다 쓴 링크를 닫으면 자리가 생겨요.`);
       }
     }
     const password = String(body.password ?? "");
     if (password.length < 4 || password.length > 64) return fail(400, "비밀번호는 4~64자로 정해 주세요.");
     const output: Output = OUTPUTS.has(body.output as Output) ? (body.output as Output) : "pdf";
-    // 삭제 시간: 비회원은 10분만, 로그인 회원은 10분 · 1시간 · 3일 · 7일
-    const allowed = userId ? EXPIRE_OPTIONS.map((o) => o.minutes) : GUEST_EXPIRE_MINUTES;
-    const asked = Math.floor(Number(body.expireMinutes));
-    let minutes = Number.isFinite(asked) ? asked : userId ? MEMBER_DEFAULT_EXPIRE : GUEST_EXPIRE_MINUTES[0];
-    if (!allowed.includes(minutes)) {
-      if (!userId && EXPIRE_OPTIONS.some((o) => o.minutes === minutes)) {
-        return fail(400, "비회원은 10분 후 삭제만 쓸 수 있어요. 로그인하면 1시간 · 3일 · 7일도 고를 수 있어요.");
+
+    // 마감: 요금제가 고를 수 있는 삭제 시간, 또는 최대 기간 안에서 직접 정한 시각
+    const now = new Date();
+    let expiresAt: Date;
+    if (body.expiresAt != null) {
+      if (!plan.maxCustomMinutes) return fail(400, "마감 시각 직접 지정은 로그인하면 쓸 수 있어요.");
+      const t = Date.parse(String(body.expiresAt));
+      if (!Number.isFinite(t)) return fail(400, "마감 시각이 올바르지 않아요.");
+      if (t < now.getTime() + (MIN_CUSTOM_MINUTES - 1) * 60000) return fail(400, `마감 시각은 지금부터 ${MIN_CUSTOM_MINUTES}분 뒤부터 정할 수 있어요.`);
+      if (t > now.getTime() + plan.maxCustomMinutes * 60000 + 60000) {
+        return fail(400, `${plan.name}은 마감을 ${plan.id === "pro" ? "1년" : `${plan.maxCustomMinutes / 1440}일`} 안에서 정할 수 있어요.`);
       }
-      return fail(400, "삭제 시간이 올바르지 않아요.");
+      expiresAt = new Date(t);
+    } else {
+      const asked = Math.floor(Number(body.expireMinutes));
+      const minutes = Number.isFinite(asked) ? asked : plan.defaultExpire;
+      if (!plan.expireMinutes.includes(minutes)) {
+        if (plan.id === "guest") return fail(400, "나그네는 10분 후 삭제만 쓸 수 있어요. 로그인하면 더 길게 고를 수 있어요.");
+        if (EXPIRE_OPTIONS.some((o) => o.minutes === minutes)) return fail(400, "이 보관 기간은 프로에서 쓸 수 있어요.");
+        return fail(400, "삭제 시간이 올바르지 않아요.");
+      }
+      expiresAt = new Date(now.getTime() + minutes * 60000);
+    }
+    if (plan.id === "pro" && proUntil && expiresAt.getTime() > Date.parse(proUntil) && !body.acceptBeyondPlan) {
+      return json(
+        { error: "프로 구독 기간 이후까지 열리는 링크예요. 확인이 필요해요.", code: "beyond_plan", proUntil },
+        409,
+      );
     }
 
     const id = randomId(10);
     const adminToken = randomToken();
-    const now = new Date();
     const share: ShareRow = {
       id,
       owner_id: userId,
@@ -273,7 +380,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       password_hash: await hashPassword(password),
       admin_token_hash: await sha256(adminToken),
       created_at: now.toISOString(),
-      expires_at: new Date(now.getTime() + minutes * 60000).toISOString(),
+      expires_at: expiresAt.toISOString(),
+      plan: plan.id,
     };
     const rows: FileRow[] = files.map((f, i) => ({
       id: randomId(8),
@@ -337,44 +445,90 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     });
   }
 
-  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/files\/([A-Za-z0-9]{6,16})$/.exec(path)) && method === "PUT") {
+  // ---------- 파일 올리기 (작은 파일: 한 번에, 큰 파일: 나눠서) ----------
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/files\/([A-Za-z0-9]{6,16})(\/mpu(?:\/([A-Za-z0-9_.~-]+)(?:\/(\d+|complete))?)?)?$/.exec(path))) {
     const share = await requireManager(env, db, request, m[1]);
     if (share instanceof Response) return share;
-    if (isExpired(share)) return fail(410, "보관 기간이 지난 링크예요.");
+    if (isExpired(share)) return fail(410, "닫힌 링크예요.");
     const file = share.files.find((f) => f.id === m![2]);
     if (!file) return fail(404, "파일을 찾을 수 없어요.");
     const kind = url.searchParams.get("kind") === "original" ? "original" : "pdf";
     if (kind === "original" && !needsOriginal(share, file)) return fail(400, "이 링크는 원본을 받지 않아요.");
     if (kind === "pdf" && !needsPdf(share, file)) return fail(400, "이 링크는 PDF를 받지 않아요.");
+    const plan = planOfShare(share);
+    // 원본(그리고 원래 PDF인 파일)은 처음 알린 크기 그대로, 브라우저에서 만든 PDF는 원본의 몇 배까지
+    const exact = kind === "original" || file.ext === "pdf";
+    const maxBytes = exact ? file.size : Math.max(file.size, 1 * MB) * PDF_SIZE_FACTOR;
+    const objKey = key(share.id, file.id, kind, file.ext);
+    const contentType = kind === "pdf" ? "application/pdf" : "application/octet-stream";
 
-    const limits = limitsFor(env, Boolean(share.owner_id));
-    const maxBytes = Math.min(
-      MAX_BODY_BYTES,
-      limits.maxFileMb * 1048576 * (kind === "pdf" && file.ext !== "pdf" ? PDF_SIZE_FACTOR : 1),
-    );
-    const declared = Number(request.headers.get("Content-Length"));
-    if (Number.isFinite(declared) && declared > maxBytes) return fail(413, `파일이 너무 커요 (최대 ${Math.round(maxBytes / 1048576)}MB).`);
-    const data = await request.arrayBuffer();
-    if (data.byteLength === 0) return fail(400, "빈 파일이에요.");
-    if (data.byteLength > maxBytes) return fail(413, `파일이 너무 커요 (최대 ${Math.round(maxBytes / 1048576)}MB).`);
-    if (kind === "pdf" && new TextDecoder().decode(data.slice(0, 5)) !== "%PDF-") return fail(400, "PDF 파일이 아니에요.");
-    if (kind === "original" && data.byteLength !== file.size) return fail(400, "처음에 고른 파일과 크기가 달라요.");
+    // 한 번에 올리기
+    if (!m[3] && method === "PUT") {
+      const declared = Number(request.headers.get("Content-Length"));
+      if (Number.isFinite(declared) && declared > Math.min(maxBytes, MAX_BODY_BYTES)) {
+        return fail(413, declared > MAX_BODY_BYTES ? "큰 파일은 나눠 올려야 해요." : "처음에 고른 파일보다 커요.");
+      }
+      const data = await request.arrayBuffer();
+      if (data.byteLength === 0) return fail(400, "빈 파일이에요.");
+      if (data.byteLength > maxBytes) return fail(413, "처음에 고른 파일보다 커요.");
+      if (exact && data.byteLength !== file.size) return fail(400, "처음에 고른 파일과 크기가 달라요.");
+      if (kind === "pdf" && new TextDecoder().decode(data.slice(0, 5)) !== "%PDF-") return fail(400, "PDF 파일이 아니에요.");
+      await env.BUCKET.put(objKey, data, { httpMetadata: { contentType } });
+      return json({ status: await markUploaded(db, share, file, kind, data.byteLength) });
+    }
 
-    await env.BUCKET.put(key(share.id, file.id, kind, file.ext), data, {
-      httpMetadata: { contentType: kind === "pdf" ? "application/pdf" : "application/octet-stream" },
-    });
-    const next: FileRow = { ...file };
-    if (kind === "pdf") Object.assign(next, { pdf_size: data.byteLength, error: null });
-    else next.original_uploaded = true;
-    if (next.status === "error" && kind === "pdf") next.status = "uploading";
-    next.status = computeStatus(share, next);
-    await db.updateFile(share.id, file.id, {
-      pdf_size: next.pdf_size,
-      original_uploaded: next.original_uploaded,
-      status: next.status,
-      error: next.error,
-    });
-    return json({ status: next.status });
+    // 나눠 올리기 (R2 멀티파트). 원본이 MULTIPART_THRESHOLD 보다 큰 파일만
+    if (!exact || file.size <= MULTIPART_THRESHOLD) return fail(400, "이 파일은 한 번에 올려 주세요.");
+    if (plan.maxFileMb != null && file.size > plan.maxFileMb * MB) return fail(413, "요금제의 파일 크기 한도를 넘었어요.");
+    const uploadId = m[4];
+    if (!uploadId && method === "POST") {
+      const mpu = await env.BUCKET.createMultipartUpload(objKey, { httpMetadata: { contentType } });
+      return json({ uploadId: mpu.uploadId, partSize: PART_SIZE, parts: Math.ceil(file.size / PART_SIZE) });
+    }
+    if (!uploadId) return fail(405, "지원하지 않는 요청이에요.");
+    const mpu = env.BUCKET.resumeMultipartUpload(objKey, uploadId);
+    if (m[5] && m[5] !== "complete" && method === "PUT") {
+      const n = Number(m[5]);
+      const parts = Math.ceil(file.size / PART_SIZE);
+      if (n < 1 || n > parts) return fail(400, "조각 번호가 올바르지 않아요.");
+      const want = n < parts ? PART_SIZE : file.size - PART_SIZE * (parts - 1);
+      const data = await request.arrayBuffer();
+      if (data.byteLength !== want) return fail(400, "조각 크기가 올바르지 않아요.");
+      try {
+        const part = await mpu.uploadPart(n, data);
+        return json({ partNumber: part.partNumber, etag: part.etag });
+      } catch {
+        return fail(409, "이어 올릴 수 없는 업로드예요. 처음부터 다시 올려 주세요.");
+      }
+    }
+    if (m[5] === "complete" && method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { parts?: { partNumber: number; etag: string }[] };
+      const parts = (body.parts ?? []).filter((p) => Number.isInteger(p?.partNumber) && typeof p?.etag === "string").sort((x, y) => x.partNumber - y.partNumber);
+      if (parts.length !== Math.ceil(file.size / PART_SIZE)) return fail(400, "아직 다 올라오지 않았어요.");
+      let obj: R2Object;
+      try {
+        obj = await mpu.complete(parts);
+      } catch {
+        return fail(409, "조각을 합치지 못했어요. 처음부터 다시 올려 주세요.");
+      }
+      if (obj.size !== file.size) {
+        await env.BUCKET.delete(objKey);
+        return fail(400, "처음에 고른 파일과 크기가 달라요.");
+      }
+      if (kind === "pdf") {
+        const head = await env.BUCKET.get(objKey, { range: { offset: 0, length: 5 } });
+        if (!head || (await head.text()) !== "%PDF-") {
+          await env.BUCKET.delete(objKey);
+          return fail(400, "PDF 파일이 아니에요.");
+        }
+      }
+      return json({ status: await markUploaded(db, share, file, kind, obj.size) });
+    }
+    if (!m[5] && method === "DELETE") {
+      await mpu.abort().catch(() => {});
+      return json({ ok: true });
+    }
+    return fail(405, "지원하지 않는 요청이에요.");
   }
 
   if ((m = /^\/api\/shares\/([A-Za-z0-9]{8,16})\/files\/([A-Za-z0-9]{6,16})\/fail$/.exec(path)) && method === "POST") {
@@ -472,6 +626,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
  */
 async function cleanup(env: Env) {
   const db = getDb(env);
+  // 프로가 끝나고 유예가 지난 회원: 멤버십 한도를 넘는 링크를 닫음 (파일은 아래에서 지움)
+  const lapsed = await db.listLapsedPro(new Date(Date.now() - PRO_GRACE_DAYS * DAY).toISOString(), 50).catch(() => []);
+  for (const row of lapsed) {
+    for (const s of sharesToClose(await db.listOwnerShares(row.user_id), row.expires_at)) await closeShare(env, db, s);
+    await db.markEnforced(row.user_id);
+  }
+
   for (let round = 0; round < 5; round++) {
     const ids = await db.listToPurge(100);
     if (ids.length === 0) break;
