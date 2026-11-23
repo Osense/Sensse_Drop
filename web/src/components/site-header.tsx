@@ -19,8 +19,7 @@ export function SiteHeader() {
   const pathname = usePathname();
   const { ready, email, signOut } = useAuth();
   const isShare = pathname.startsWith("/s/");
-  // 미리보기판(서버 없음)은 "내 링크" 메뉴를 숨기고 로그인만 보여 줍니다.
-  const showNav = !isShare && !STATIC_ONLY;
+  const showNav = !isShare;
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-xl">
@@ -83,6 +82,11 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
+      )}
+      {STATIC_ONLY && (
+        <div className="border-t bg-amber-50 px-4 py-2 text-center text-xs text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
+          <b>체험판</b> · 서버 연결 전이라 만든 링크와 파일은 이 브라우저에만 저장돼요. 다른 기기 · QR로는 열리지 않아요.
+        </div>
       )}
     </header>
   );

@@ -20,8 +20,8 @@ import { baseOf, displayName, extOf, formatSize } from "@/lib/format";
 import { FileNameInput } from "@/components/file-name-input";
 import { ExpirePicker } from "@/components/expire-picker";
 import { cn } from "@/lib/utils";
+import { ACCEPT, isAllowed, isHangul } from "@/lib/file-types";
 
-const ALLOWED = ["hwp", "hwpx", "pdf"];
 const DEFAULT_CONFIG: AppConfig = {
   guest: { maxFiles: 2, maxFileMb: 5 },
   member: { maxFiles: 10, maxFileMb: 20 },
@@ -82,8 +82,8 @@ export function HostView() {
     const next = [...files];
     for (const file of Array.from(list)) {
       const ext = extOf(file.name);
-      if (!ALLOWED.includes(ext)) {
-        setNotice(`HWP · HWPX · PDF만 올릴 수 있어요: ${file.name}`);
+      if (!isAllowed(ext)) {
+        setNotice(`이 형식은 올릴 수 없어요: ${file.name} (한글 · PDF · 오피스 문서 · 이미지 · 압축 · 음성 · 영상 가능)`);
         continue;
       }
       if (file.size > limits.maxFileMb * 1024 * 1024) {
@@ -107,7 +107,7 @@ export function HostView() {
     }
     setFiles(next);
     // HWP · HWPX 가 있으면 변환 엔진을 미리 받아 둡니다.
-    if (next.some((p) => extOf(p.file.name) !== "pdf")) preloadConverter().catch(() => {});
+    if (next.some((p) => isHangul(extOf(p.file.name)))) preloadConverter().catch(() => {});
   }
 
   function setStatus(key: string, status: Picked["status"], error?: string, note?: string) {
@@ -142,8 +142,9 @@ export function HostView() {
         const p = files[i];
         const fileId = res.files[i].id;
         const ext = extOf(p.file.name);
-        const needsPdf = output !== "original" && ext !== "pdf";
-        const needsOriginal = ext !== "pdf" && output !== "pdf";
+        // 한글만 보내는 방식을 따르고, PDF는 PDF로, 다른 형식은 원본 그대로 보냅니다.
+        const needsPdf = isHangul(ext) && output !== "original";
+        const needsOriginal = isHangul(ext) ? output !== "pdf" : ext !== "pdf";
         const put = (kind: "pdf" | "original", body: Blob) =>
           api<{ status: Picked["status"] }>(`/api/shares/${res.id}/files/${fileId}?kind=${kind}`, {
             method: "PUT",
@@ -226,7 +227,7 @@ export function HostView() {
             한글 파일 올리고, <span className="text-gradient">링크 하나로</span>
           </h1>
           <p className="mt-2 text-muted-foreground">
-            HWP · HWPX를 보이는 그대로 PDF로 바꿔, 비밀번호 걸린 링크로 나눠 줘요. 받는 사람은 누르면 바로 받아요.
+            한글(HWP · HWPX)은 보이는 그대로 PDF로 바꾸고, 이미지 · 오피스 문서 등 다른 파일은 그대로, 비밀번호 걸린 링크 하나로 나눠 줘요.
           </p>
         </div>
 
@@ -270,7 +271,7 @@ export function HostView() {
               </span>
               <span className="font-semibold">눌러서 고르거나 끌어다 놓으세요</span>
               <span className="text-xs text-muted-foreground">
-                HWP · HWPX · PDF · 최대 {limits.maxFiles}개 · 파일당 {limits.maxFileMb}MB
+                한글 · PDF · 오피스 · 이미지 등 · 최대 {limits.maxFiles}개 · 파일당 {limits.maxFileMb}MB
               </span>
             </div>
             <input
@@ -278,7 +279,7 @@ export function HostView() {
               type="file"
               hidden
               multiple
-              accept=".hwp,.hwpx,.pdf"
+              accept={ACCEPT}
               onChange={(e) => {
                 if (e.target.files) addFiles(e.target.files);
                 e.target.value = "";
@@ -336,7 +337,7 @@ export function HostView() {
           </Card>
 
           <Card className="p-5 sm:p-6">
-            <Step n={3} title="보내는 방식" />
+            <Step n={3} title="한글 파일 보내는 방식" />
             <div className="grid gap-2 sm:grid-cols-3">
               {OUTPUTS.map((o) => (
                 <RadioCard key={o.value} name="output" value={o.value} checked={output === o.value} onSelect={setOutput}>
@@ -347,6 +348,7 @@ export function HostView() {
                 </RadioCard>
               ))}
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">PDF · 이미지 · 오피스 문서 등 다른 파일은 고른 방식과 상관없이 그대로 보내요.</p>
           </Card>
 
           <Card className="space-y-4 p-5 sm:p-6">

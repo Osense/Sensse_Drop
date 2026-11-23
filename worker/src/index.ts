@@ -5,12 +5,13 @@
  * - 파일은 R2(BUCKET), 링크 정보는 Supabase WSNS 프로젝트(sd_shares · sd_files)에 둡니다.
  * - HWP/HWPX → PDF 변환은 올리는 사람의 브라우저에서 끝내고 PDF를 올립니다. 서버는 변환하지 않습니다.
  */
+import { ALLOWED_EXT, isHangul } from "./file-types";
 import { checkAccess, hashPassword, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
 import { getDb, getUserId, isDevMode, type Db } from "./db";
 import type { Env, FileRow, Output, ShareRow, ShareWithFiles } from "./types";
 
 const ACCESS_TTL_MS = 12 * 60 * 60 * 1000;
-const ALLOWED_EXT = new Set(["hwp", "hwpx", "pdf"]);
+const ALLOWED = new Set<string>(ALLOWED_EXT);
 const OUTPUTS = new Set<Output>(["pdf", "original", "both"]);
 /** 브라우저에서 만든 PDF 는 쪽 그림이라 원본보다 커질 수 있어 원본 한도의 이 배수까지 받습니다 */
 const PDF_SIZE_FACTOR = 4;
@@ -88,8 +89,9 @@ function baseUrl(env: Env, request: Request) {
 const key = (shareId: string, fileId: string, kind: "pdf" | "original", ext: string) =>
   `shares/${shareId}/${fileId}.${kind === "pdf" ? "pdf" : ext}`;
 
-const needsPdf = (share: ShareRow, f: FileRow) => f.ext === "pdf" || share.output !== "original";
-const needsOriginal = (share: ShareRow, f: FileRow) => f.ext !== "pdf" && share.output !== "pdf";
+/** 한글 파일만 보내는 방식(PDF / PDF + 원본 / 원본)을 따르고, PDF는 PDF로, 나머지 형식은 원본 그대로 */
+const needsPdf = (share: ShareRow, f: FileRow) => f.ext === "pdf" || (isHangul(f.ext) && share.output !== "original");
+const needsOriginal = (share: ShareRow, f: FileRow) => (isHangul(f.ext) ? share.output !== "pdf" : f.ext !== "pdf");
 
 /** 올라온 조각을 보고 파일 상태 결정 */
 function computeStatus(share: ShareRow, f: FileRow): FileRow["status"] {
@@ -201,7 +203,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     }
     for (const f of files) {
       const ext = extOf(String(f.name ?? ""));
-      if (!ALLOWED_EXT.has(ext)) return fail(400, `HWP · HWPX · PDF만 올릴 수 있어요: ${cleanName(f.name)}`);
+      if (!ALLOWED.has(ext)) return fail(400, `이 형식은 올릴 수 없어요: ${cleanName(f.name)}`);
       const size = Number(f.size);
       if (!Number.isFinite(size) || size < 0) return fail(400, "파일 크기가 올바르지 않아요.");
       if (size > limits.maxFileMb * 1048576) {

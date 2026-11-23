@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
+import { STATIC_ONLY } from "@/lib/config";
 import { api, type DownloadItem } from "@/lib/api";
 import { extOf, formatDate, formatSize } from "@/lib/format";
 
@@ -49,7 +50,9 @@ export function ShareView() {
   }, []);
 
   React.useEffect(() => {
-    const shareId = window.location.pathname.split("/").filter(Boolean)[1] ?? "";
+    // /s/<링크> (서버) 또는 /s/?id=<링크> (체험판)
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    const shareId = new URLSearchParams(window.location.search).get("id") || parts[parts.indexOf("s") + 1] || "";
     setId(shareId);
     if (!/^[A-Za-z0-9]{8,16}$/.test(shareId)) {
       setState("gone");
@@ -169,6 +172,14 @@ export function ShareView() {
                       <a
                         href={`/api/s/${id}/download/${item.fileId}/${item.kind}`}
                         download={item.name}
+                        onClick={
+                          STATIC_ONLY
+                            ? (e) => {
+                                e.preventDefault();
+                                import("@/lib/mock-api").then((m) => m.mockDownload(id, item.fileId, item.kind, item.name)).catch((err) => alert(err.message));
+                              }
+                            : undefined
+                        }
                         className="flex min-h-16 items-center gap-3 rounded-xl border bg-card p-3.5 shadow-sm transition-all hover:border-brand/50 hover:bg-brand/5 active:scale-[0.99]"
                       >
                         {body}

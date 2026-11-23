@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
-import { STATIC_ONLY, WSNS_FORGOT_URL, WSNS_SIGNUP_URL } from "@/lib/config";
+import { WSNS_FORGOT_URL, WSNS_SIGNUP_URL } from "@/lib/config";
 
 export function LoginView() {
   const router = useRouter();
@@ -62,7 +62,7 @@ export function LoginView() {
                 <td>10분 후</td>
                 <td className="font-semibold">10분~7일</td>
               </tr>
-              <tr className={STATIC_ONLY ? "hidden" : "border-t"}>
+              <tr className="border-t">
                 <td className="px-4 py-2.5 text-left">내 링크 모아 보기</td>
                 <td className="text-muted-foreground">이 기기만</td>
                 <td>

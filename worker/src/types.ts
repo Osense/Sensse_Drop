@@ -26,7 +26,7 @@ export interface FileRow {
   share_id: string;
   position: number;
   original_name: string;
-  ext: "hwp" | "hwpx" | "pdf";
+  ext: string;
   size: number;
   status: FileStatus;
   error: string | null;

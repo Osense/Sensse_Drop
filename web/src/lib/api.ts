@@ -1,3 +1,4 @@
+import { STATIC_ONLY } from "./config";
 export type Limits = { maxFiles: number; maxFileMb: number };
 
 export type AppConfig = {
@@ -49,6 +50,8 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  // 서버 없는 미리보기판(GitHub Pages): 이 브라우저 안의 체험판 서버로
+  if (STATIC_ONLY) return (await import("./mock-api")).mockApi<T>(url, init);
   let res: Response;
   try {
     res = await fetch(url, { credentials: "same-origin", ...init });
