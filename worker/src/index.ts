@@ -376,7 +376,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const share: ShareRow = {
       id,
       owner_id: userId,
-      title: String(body.title ?? "").trim().slice(0, 100) || "배포 자료",
+      title: String(body.title ?? "").trim().slice(0, TITLE_MAX) || "배포 자료",
       message: String(body.message ?? "").replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000),
       output,
       password_hash: await hashPassword(password),
@@ -567,7 +567,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       title: share.title,
       message: share.message ?? "",
       expiresAt: share.expires_at,
-      fileCount: share.files.length,
+      // 한글을 PDF + 원본으로 보내면 받는 파일은 2개라, 받는 사람이 실제로 받는 개수로 셉니다
+      fileCount: downloadItems(share).length,
       authed: await checkAccess(secretOf(env), share.id, cookies(request)[`sd_${share.id}`]),
     });
   }
@@ -653,6 +654,9 @@ async function cleanup(env: Env) {
     }
   }
 }
+
+/** 제목 최대 글자 수 (QR 화면 · 저장 이미지에서 두 줄 안에 들어가게) */
+const TITLE_MAX = 40;
 
 /** 짧은 링크 코드 (worker/src/crypto.ts CODE_ALPHABET). vendor · links 같은 화면 경로와 겹치지 않음 */
 const SHARE_PATH = /^[a-km-np-z2-9]{6}$/;

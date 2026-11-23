@@ -89,6 +89,15 @@ export function ShareView() {
 
   return (
     <div className="relative">
+      {/* 맨 위 가운데: 링크가 닫히기까지 남은 시간 (스크롤해도 보이게) */}
+      {info && (state === "login" || state === "list") && (
+        <div className="sticky top-16 z-30 border-b bg-background/85 py-2.5 backdrop-blur-xl">
+          <div className="flex flex-col items-center gap-0.5 px-4 text-center">
+            <Countdown expiresAt={info.expiresAt} onExpire={expire} size="lg" />
+            <span className="text-xs text-muted-foreground">{formatDate(info.expiresAt)}에 닫히고 파일이 지워져요</span>
+          </div>
+        </div>
+      )}
       <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-72" />
       <div className="mx-auto max-w-lg px-4 py-8 sm:py-12">
         {state === "loading" && (
@@ -108,12 +117,7 @@ export function ShareView() {
           <div className="mb-5 animate-fade-up">
             <p className="text-xs font-semibold text-brand">받을 자료</p>
             <h1 className="mt-1 text-2xl font-extrabold tracking-tight">{info.title}</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Countdown expiresAt={info.expiresAt} onExpire={expire} />
-              <span className="text-sm text-muted-foreground">
-                파일 {info.fileCount}개 · {formatDate(info.expiresAt)}까지
-              </span>
-            </div>
+            <p className="mt-1.5 text-sm text-muted-foreground">받을 파일 {state === "list" ? items.length : info.fileCount}개</p>
           </div>
         )}
 

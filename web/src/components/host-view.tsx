@@ -26,6 +26,9 @@ import { FileNameInput } from "@/components/file-name-input";
 import { cn } from "@/lib/utils";
 import { ACCEPT, isAllowed, isHangul } from "@/lib/file-types";
 
+/** 제목 최대 글자 수 (worker TITLE_MAX 와 같게). QR 화면 · 저장 이미지에서 두 줄 안에 들어가요 */
+const TITLE_MAX = 40;
+
 const OUTPUTS = [
   { value: "pdf", title: "PDF로 보내기", desc: "받는 사람은 PDF만" },
   { value: "both", title: "PDF + 원본", desc: "둘 다 받을 수 있게" },
@@ -374,8 +377,14 @@ export function HostView() {
           <Card className="space-y-4 p-5 sm:p-6">
             <Step n={4} title="링크 설정" />
             <div className="space-y-1.5">
-              <Label htmlFor="title">제목</Label>
-              <Input id="title" value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} placeholder="예) 2학기 기말고사 3학년 수학" />
+              <div className="flex items-baseline justify-between">
+                <Label htmlFor="title">제목</Label>
+                <span className={cn("text-xs tabular-nums", title.length >= TITLE_MAX ? "font-semibold text-brand" : "text-muted-foreground")}>
+                  {title.length}/{TITLE_MAX}
+                </span>
+              </div>
+              <Input id="title" value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value.slice(0, TITLE_MAX))} placeholder="예) 2학기 기말고사 3학년 수학" />
+              <p className="text-xs text-muted-foreground">QR 화면에 크게 보여서 {TITLE_MAX}자까지 쓸 수 있어요. 자세한 설명은 안내 메시지에 적어 주세요.</p>
             </div>
             <div className="space-y-1.5">
               <div className="flex items-baseline justify-between">

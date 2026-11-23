@@ -270,7 +270,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     const now = Date.now();
     const share: MockShare = {
       id: Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(""),
-      title: String(b.title ?? "").trim().slice(0, 100) || "배포 자료",
+      title: String(b.title ?? "").trim().slice(0, 40) || "배포 자료",
       message: String(b.message ?? "").trim().slice(0, 1000),
       output: ["pdf", "original", "both"].includes(b.output) ? b.output : "pdf",
       password: pw,
@@ -396,7 +396,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
 
   if ((m = /^\/api\/s\/(\w+)$/.exec(path))) {
     const s = await viewable(m[1]);
-    return { title: s.title, message: s.message, expiresAt: s.expiresAt, fileCount: s.files.length, authed: authed(s.id) } as T;
+    return { title: s.title, message: s.message, expiresAt: s.expiresAt, fileCount: items(s).length, authed: authed(s.id) } as T;
   }
 
   if ((m = /^\/api\/s\/(\w+)\/auth$/.exec(path)) && method === "POST") {
