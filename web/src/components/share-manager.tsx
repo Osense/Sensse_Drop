@@ -8,6 +8,7 @@ import { StatusPill } from "@/components/status-pill";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ShareMessage } from "@/components/share-message";
 import { api, type ManagedShare } from "@/lib/api";
 import { hwpToPdf } from "@/lib/convert";
 import { formatDate, formatSize } from "@/lib/format";
@@ -115,6 +116,7 @@ export function ShareManager({
         <p className="text-xs font-semibold text-brand">공유 링크</p>
         <h2 className="mt-1 text-xl font-bold tracking-tight">{share.title}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{formatDate(share.expiresAt)}까지 받을 수 있어요</p>
+        <ShareMessage text={share.message} className="mt-3 bg-background/70" />
 
         <div className="mt-4 flex gap-2">
           <Input readOnly value={share.url} className="h-11 bg-background font-medium" onFocus={(e) => e.currentTarget.select()} />

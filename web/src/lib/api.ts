@@ -23,6 +23,7 @@ export type ManagedFile = {
 export type ManagedShare = {
   id: string;
   title: string;
+  message?: string;
   output: "pdf" | "original" | "both";
   createdAt: string;
   expiresAt: string;

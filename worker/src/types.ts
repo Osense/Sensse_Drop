@@ -39,6 +39,8 @@ export interface ShareRow {
   id: string;
   owner_id: string | null;
   title: string;
+  /** 받는 사람에게 보일 안내 메시지 (자료 설명 · 인사말) */
+  message: string;
   output: Output;
   password_hash: string;
   admin_token_hash: string;

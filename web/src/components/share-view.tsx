@@ -7,6 +7,7 @@ import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ShareMessage } from "@/components/share-message";
 import { api, type DownloadItem } from "@/lib/api";
 import { extOf, formatDate, formatSize } from "@/lib/format";
 
@@ -19,6 +20,7 @@ export function ShareView() {
   const [state, setState] = React.useState<State>("loading");
   const [info, setInfo] = React.useState<Info | null>(null);
   const [items, setItems] = React.useState<DownloadItem[]>([]);
+  const [message, setMessage] = React.useState("");
   const [pw, setPw] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [checking, setChecking] = React.useState(false);
@@ -26,8 +28,9 @@ export function ShareView() {
 
   const loadList = React.useCallback(async (shareId: string) => {
     try {
-      const data = await api<{ items: DownloadItem[] }>(`/api/s/${shareId}/files`);
+      const data = await api<{ items: DownloadItem[]; message?: string }>(`/api/s/${shareId}/files`);
       setItems(data.items);
+      setMessage(data.message ?? "");
       setState("list");
       clearTimeout(timer.current);
       if (data.items.some((i) => i.status === "uploading" || i.status === "converting")) {
@@ -127,6 +130,7 @@ export function ShareView() {
 
         {state === "list" && (
           <>
+            <ShareMessage text={message} className="mb-4" />
             <ul className="space-y-2.5">
               {items.map((item) => {
                 const ready = item.status === "done";

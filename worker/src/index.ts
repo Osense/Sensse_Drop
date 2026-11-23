@@ -186,6 +186,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const limits = limitsFor(env, Boolean(userId));
     const body = (await request.json().catch(() => null)) as {
       title?: string;
+      message?: string;
       password?: string;
       output?: Output;
       expireMinutes?: number;
@@ -228,6 +229,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       id,
       owner_id: userId,
       title: String(body.title ?? "").trim().slice(0, 100) || "배포 자료",
+      message: String(body.message ?? "").replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000),
       output,
       password_hash: await hashPassword(password),
       admin_token_hash: await sha256(adminToken),
@@ -264,6 +266,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({
       id: share.id,
       title: share.title,
+      message: share.message ?? "",
       output: share.output,
       createdAt: share.created_at,
       expiresAt: share.expires_at,
@@ -370,7 +373,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})\/files$/.exec(path)) && method === "GET") {
     const share = await requireViewer(env, db, request, m[1]);
     if (share instanceof Response) return share;
-    return json({ title: share.title, expiresAt: share.expires_at, items: downloadItems(share) });
+    return json({ title: share.title, message: share.message ?? "", expiresAt: share.expires_at, items: downloadItems(share) });
   }
 
   if ((m = /^\/api\/s\/([A-Za-z0-9]{8,16})\/download\/([A-Za-z0-9]{6,16})\/(pdf|original)$/.exec(path)) && method === "GET") {

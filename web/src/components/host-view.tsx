@@ -10,6 +10,7 @@ import { Wordmark } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { RadioCard } from "@/components/ui/radio-card";
 import { api, localLinks, type AppConfig } from "@/lib/api";
@@ -52,6 +53,7 @@ export function HostView() {
   const [files, setFiles] = React.useState<Picked[]>([]);
   const [output, setOutput] = React.useState<string>("pdf");
   const [title, setTitle] = React.useState("");
+  const [message, setMessage] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPw, setShowPw] = React.useState(false);
   const [pickedMinutes, setMinutes] = React.useState<number | null>(null);
@@ -126,6 +128,7 @@ export function HostView() {
         headers,
         body: JSON.stringify({
           title,
+          message,
           password,
           output,
           expireMinutes: minutes,
@@ -191,6 +194,7 @@ export function HostView() {
     setCreated(null);
     setFiles([]);
     setTitle("");
+    setMessage("");
     setPassword("");
     setOutput("pdf");
     setMinutes(null);
@@ -350,6 +354,23 @@ export function HostView() {
             <div className="space-y-1.5">
               <Label htmlFor="title">제목</Label>
               <Input id="title" value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} placeholder="예) 2학기 기말고사 3학년 수학" />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <Label htmlFor="message">
+                  안내 메시지 <span className="font-normal text-muted-foreground">(선택)</span>
+                </Label>
+                <span className="text-xs text-muted-foreground">{message.length}/1000</span>
+              </div>
+              <Textarea
+                id="message"
+                value={message}
+                maxLength={1000}
+                rows={3}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder={"예) 3학년 여러분, 기말고사 수고 많았어요! 과목별 정답과 해설이에요.\n궁금한 점은 담임 선생님께 물어보세요."}
+              />
+              <p className="text-xs text-muted-foreground">어떤 자료인지, 인사말 등을 적으면 받는 사람의 파일 목록 위에 보여요.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pw">받는 사람 비밀번호</Label>
