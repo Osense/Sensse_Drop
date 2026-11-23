@@ -9,6 +9,8 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
+import { Countdown } from "@/components/countdown";
+import { QrButtons, QrViewer, saveQrImage } from "@/components/qr-viewer";
 import { api, type ManagedShare } from "@/lib/api";
 import { hwpToPdf } from "@/lib/convert";
 import { formatDate, formatSize } from "@/lib/format";
@@ -34,6 +36,8 @@ export function ShareManager({
 }) {
   const [share, setShare] = React.useState<ManagedShare | null>(null);
   const [qr, setQr] = React.useState("");
+  const [qrOpen, setQrOpen] = React.useState(false);
+  const closeQr = React.useCallback(() => setQrOpen(false), []);
   const [copied, setCopied] = React.useState<string | null>(null);
   const timer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -115,7 +119,10 @@ export function ShareManager({
       <div className="border-b bg-gradient-to-br from-brand/10 via-transparent to-brand-2/10 p-5 sm:p-6">
         <p className="text-xs font-semibold text-brand">공유 링크</p>
         <h2 className="mt-1 text-xl font-bold tracking-tight">{share.title}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{formatDate(share.expiresAt)}까지 받을 수 있어요</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Countdown expiresAt={share.expiresAt} />
+          <span className="text-sm text-muted-foreground">{formatDate(share.expiresAt)}에 링크와 파일이 지워져요</span>
+        </div>
         <ShareMessage text={share.message} className="mt-3 bg-background/70" />
 
         <div className="mt-4 flex gap-2">
@@ -129,7 +136,10 @@ export function ShareManager({
         <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center">
           {qr && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={qr} alt="공유 링크 QR 코드" className="size-36 shrink-0 rounded-lg border bg-white p-1.5" />
+            <button type="button" onClick={() => setQrOpen(true)} className="group relative shrink-0 self-start" aria-label="QR 코드 크게 보기">
+              <img src={qr} alt="공유 링크 QR 코드" className="size-36 rounded-lg border bg-white p-1.5 transition-transform group-hover:scale-[1.03]" />
+              <span className="absolute inset-x-0 bottom-1.5 mx-auto w-fit rounded-full bg-black/70 px-2 py-0.5 text-[11px] font-semibold text-white">눌러서 크게</span>
+            </button>
           )}
           <div className="flex-1 space-y-3 text-sm text-muted-foreground">
             <p>메신저로 링크와 비밀번호를 보내거나, 교실 화면에 QR 코드를 띄워 주세요.</p>
@@ -138,6 +148,7 @@ export function ShareManager({
                 {copied === "msg" ? <Check /> : <Copy />}
                 {password ? "링크 + 비밀번호 복사" : "제목 + 링크 복사"}
               </Button>
+              <QrButtons onOpen={() => setQrOpen(true)} onSave={() => saveQrImage(share.url, share.title)} />
               <a href={share.url} target="_blank" rel="noopener" className={buttonVariants({ variant: "outline", size: "sm" })}>
                 <ExternalLink /> 받는 화면 보기
               </a>
@@ -204,6 +215,7 @@ export function ShareManager({
           </button>
         </div>
       </div>
+      <QrViewer url={share.url} title={share.title} expiresAt={share.expiresAt} open={qrOpen} onClose={closeQr} />
     </Card>
   );
 }

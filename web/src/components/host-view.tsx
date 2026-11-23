@@ -370,7 +370,7 @@ export function HostView() {
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={"예) 3학년 여러분, 기말고사 수고 많았어요! 과목별 정답과 해설이에요.\n궁금한 점은 담임 선생님께 물어보세요."}
               />
-              <p className="text-xs text-muted-foreground">어떤 자료인지, 인사말 등을 적으면 받는 사람의 파일 목록 위에 보여요.</p>
+              <p className="text-xs text-muted-foreground">어떤 자료인지, 인사말 등을 적으면 링크를 연 사람에게 바로 보여요. 비밀번호 같은 비밀 정보는 적지 마세요.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pw">받는 사람 비밀번호</Label>

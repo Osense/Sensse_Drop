@@ -347,6 +347,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
     return json({
       title: share.title,
+      message: share.message ?? "",
       expiresAt: share.expires_at,
       fileCount: share.files.length,
       authed: await checkAccess(secretOf(env), share.id, cookies(request)[`sd_${share.id}`]),

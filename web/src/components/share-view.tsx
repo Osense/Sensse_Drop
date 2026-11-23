@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
+import { Countdown } from "@/components/countdown";
 import { api, type DownloadItem } from "@/lib/api";
 import { extOf, formatDate, formatSize } from "@/lib/format";
 
-type Info = { title: string; expiresAt: string; fileCount: number; authed: boolean };
+type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean };
 type State = "loading" | "login" | "list" | "gone";
 
 /** 받는 사람 화면: /s/<링크> */
@@ -25,6 +26,12 @@ export function ShareView() {
   const [error, setError] = React.useState<string | null>(null);
   const [checking, setChecking] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** 카운트다운이 끝나면 목록을 닫습니다 (서버에서도 만료된 링크는 열리지 않아요) */
+  const expire = React.useCallback(() => {
+    clearTimeout(timer.current);
+    setItems([]);
+    setState("gone");
+  }, []);
 
   const loadList = React.useCallback(async (shareId: string) => {
     try {
@@ -90,7 +97,7 @@ export function ShareView() {
         {state === "gone" && (
           <Card className="p-8 text-center">
             <h1 className="text-lg font-bold">링크를 열 수 없어요</h1>
-            <p className="mt-2 text-sm text-muted-foreground">링크가 없거나 보관 기간이 지났어요. 보낸 분께 다시 요청해 주세요.</p>
+            <p className="mt-2 text-sm text-muted-foreground">링크가 없거나 정한 시간이 지나 닫혔어요. 보낸 분께 다시 요청해 주세요.</p>
           </Card>
         )}
 
@@ -98,11 +105,16 @@ export function ShareView() {
           <div className="mb-5 animate-fade-up">
             <p className="text-xs font-semibold text-brand">받을 자료</p>
             <h1 className="mt-1 text-2xl font-extrabold tracking-tight">{info.title}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              파일 {info.fileCount}개 · {formatDate(info.expiresAt)}까지
-            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Countdown expiresAt={info.expiresAt} onExpire={expire} />
+              <span className="text-sm text-muted-foreground">
+                파일 {info.fileCount}개 · {formatDate(info.expiresAt)}까지
+              </span>
+            </div>
           </div>
         )}
+
+        {state === "login" && <ShareMessage text={info?.message} className="mb-4" />}
 
         {state === "login" && (
           <Card className="p-5 sm:p-6">
