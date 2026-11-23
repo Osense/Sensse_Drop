@@ -339,3 +339,60 @@
 [data-seen="true"] .glyph-draw {
   stroke-dashoffset: 0;
 }
+
+/* ---------- 받는 화면: 만화 같은 배경 · 파일을 가리키는 화살표 ---------- */
+@layer components {
+  /* 집중선 + 망점. 가운데(파일 목록 자리)는 비워 두고 가장자리만 */
+  .comic-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -10;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .comic-bg::before {
+    content: "";
+    position: absolute;
+    inset: -50%;
+    background: repeating-conic-gradient(from 0deg at 50% 50%, color-mix(in oklch, var(--brand) 16%, transparent) 0deg 2.2deg, transparent 2.2deg 9deg);
+    mask-image: radial-gradient(circle at 50% 50%, transparent 22%, #000 48%);
+    animation: comic-spin 160s linear infinite;
+  }
+  .comic-bg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(color-mix(in oklch, var(--brand-2) 38%, transparent) 2.2px, transparent 2.6px);
+    background-size: 14px 14px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 45%, transparent 45%, #000 95%);
+  }
+  .comic-box {
+    border: 2.5px solid var(--foreground);
+    box-shadow: 4px 4px 0 var(--foreground);
+  }
+  .comic-arrow-down {
+    animation: comic-bob-y 1.1s ease-in-out infinite;
+  }
+  .comic-arrow-right {
+    animation: comic-bob-x 1.1s ease-in-out infinite;
+  }
+  .comic-arrow-left {
+    animation: comic-bob-x 1.1s ease-in-out infinite reverse;
+  }
+  .comic-pop {
+    animation: comic-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .comic-bg::before,
+    .comic-arrow-down,
+    .comic-arrow-right,
+    .comic-arrow-left,
+    .comic-pop {
+      animation: none;
+    }
+  }
+}
+@keyframes comic-spin { to { transform: rotate(360deg); } }
+@keyframes comic-bob-y { 0%, 100% { transform: translateY(-4px); } 50% { transform: translateY(8px); } }
+@keyframes comic-bob-x { 0%, 100% { transform: translateX(-6px); } 50% { transform: translateX(8px); } }
+@keyframes comic-pop { from { transform: scale(0.6) rotate(-6deg); opacity: 0; } to { transform: scale(1) rotate(-2deg); opacity: 1; } }
