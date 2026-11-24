@@ -40,7 +40,18 @@ wrangler.jsonc
   - 192dpi 그림으로 jsPDF 에 묶어 PDF 를 만듭니다 (`web/src/lib/convert.ts`).
 - 파일: Cloudflare R2 `sense-drop-files` 버킷 (`shares/<링크>/<파일>.pdf|hwp|hwpx`). 정한 삭제 시간이 지나거나 직접 닫으면 링크는 바로 열리지 않고, 5분마다 도는 Cron 이 파일을 지웁니다. 제목 · 파일 이름 · 열람/내려받기 횟수 기록은 '배포 기록'에 30일 남았다가 지워집니다 (`HISTORY_DAYS`, migration 0004). 삭제 시간 선택지는 `worker/src/index.ts` 의 `EXPIRE_OPTIONS` · `GUEST_EXPIRE_MINUTES`.
 - 링크 정보: Supabase WSNS 프로젝트의 `sd_shares`, `sd_files`. 브라우저는 직접 접근할 수 없고(RLS + 권한 회수) Worker 가 secret 키로만 읽고 씁니다.
-- 받는 사람 비밀번호는 PBKDF2 해시로 저장하고, 맞으면 12시간짜리 서명 쿠키를 줍니다. 틀린 시도는 Cloudflare Rate Limiting(분당 10회)으로 막습니다.
+- 받는 사람 비밀번호는 서버로 보내지 않습니다(아래 종단간 암호화). 브라우저가 만든 확인용 값의 PBKDF2 해시만 저장하고, 맞으면 12시간짜리 서명 쿠키를 줍니다. 틀린 시도는 Cloudflare Rate Limiting(분당 10회)으로 막습니다.
+
+### 종단간 암호화 (`web/src/lib/e2e.ts`, `worker/src/e2e.ts`, migration 0008)
+
+파일과 파일 이름은 **보내는 사람의 브라우저에서 잠근 뒤** 올라가고, **비밀번호를 아는 사람의 브라우저에서만** 풀립니다. 서버(Worker) · Supabase · R2 에는 잠긴 데이터만 있어 운영자나 서버를 턴 사람도 내용을 볼 수 없습니다.
+
+1. 비밀번호 → PBKDF2-SHA256 60만 번(링크마다 salt) → `pwKey`(브라우저에만) + `authKey`(서버 확인용). 비밀번호 자체는 서버로 가지 않음
+2. 링크 열쇠 K(무작위 256비트)로 파일을 1MiB 조각마다 AES-256-GCM 으로 잠금(조각 번호 · 마지막 표시를 nonce 에 넣어 순서 바꾸기 · 잘라내기 방지). 파일 이름도 K 로 잠가 `sd_files.name_enc` 에, `original_name` 에는 `파일 1.hwp` 자리 표시만
+3. K 는 `HKDF(pwKey, pepper)` 로 감싸 `sd_shares.enc.wrap` 에 둠. pepper = HMAC(`FILE_KEY_SECRET`, 링크 id) 로, 비밀번호가 맞은 사람과 링크 주인에게만 내려 줌 → DB · R2 만 빼 가서는 비밀번호를 맞혀 보는 것조차 못 함
+4. 받는 사람은 내려받으면서 브라우저에서 풀어 저장(300MB 넘는 파일은 되는 브라우저에서 디스크에 바로 씀). 한글 → PDF 변환은 원래 올리는 사람 브라우저에서 하므로 그대로
+
+한계: 제목 · 안내 메시지 · 파일 형식(확장자) · 크기 · 횟수는 비밀번호 화면 전에 보여야 해서 잠그지 않습니다. 비밀번호를 잊으면 아무도 풀 수 없고, 서버의 모든 비밀값까지 가진 공격자는 짧은 비밀번호(예: 4자리 숫자)를 하나씩 맞혀 볼 수 있으니 긴 비밀번호가 안전합니다. 웹 앱이라 화면 코드 자체를 바꿔치기하는 공격은 막지 못합니다. 예전에 만든(enc 가 없는) 링크는 평문 그대로이며 정한 시간이 지나면 사라집니다.
 - 한글 렌더러 WASM 은 28MB 라 Cloudflare 정적 파일 한도(25MB)를 넘습니다. 빌드할 때 gzip(약 10MB)으로 줄여 두고 Worker 가 `Content-Encoding: gzip` 으로 내보냅니다.
 
 ### 변환 품질과 한계 (중요)
@@ -77,6 +88,7 @@ npx wrangler dev       # http://localhost:8787
 | `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → "Edit Cloudflare Workers" 템플릿 + Account › Workers R2 Storage: Edit |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 대시보드 Workers & Pages 오른쪽의 Account ID |
 | `SUPABASE_SECRET_KEY` | Supabase WSNS 프로젝트 → Project Settings → API Keys → secret 키 (`sb_secret_…`) |
+| `FILE_KEY_SECRET` (권장) | 종단간 암호화 pepper. 아무 긴 무작위 문자열(예: `openssl rand -base64 32`). **한 번 정하면 바꾸거나 지우지 마세요** (그 값으로 만든 링크를 못 열게 돼요). 없으면 Supabase secret 키로 대신합니다 |
 
 - 첫 배포 때 R2 버킷 `sense-drop-files` 를 만들고, `drop.wsns.studio` 를 Worker 커스텀 도메인으로 붙입니다 (`wrangler.jsonc` 의 `routes`). wsns.studio 영역이 같은 Cloudflare 계정에 있어야 합니다. 다른 주소를 쓰려면 `routes` 와 `vars.PUBLIC_URL` 을 같이 바꾸세요.
 - 비회원 · 회원 한도는 `wrangler.jsonc` 의 `vars` (`GUEST_MAX_FILES` 등)에서 바꿉니다. 화면은 `/api/config` 로 값을 받아 씁니다.

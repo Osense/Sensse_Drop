@@ -2,12 +2,13 @@
 
 import { api, ApiError, type FileStatus } from "./api";
 import { MULTIPART_THRESHOLD, PART_SIZE } from "./plans";
+import { encryptedSource, plainSource, type Source } from "./e2e";
 
 /**
  * 파일 올리기. 작은 파일은 한 번에, MULTIPART_THRESHOLD 보다 큰 파일은 PART_SIZE 조각으로 나눠 올립니다.
  * 나눠 올리던 중 끊기면 올린 조각을 이 브라우저(localStorage)에 적어 두었다가, 같은 파일을 다시 고르면 이어서 올려요.
  */
-type Saved = { uploadId: string; size: number; name: string; parts: Record<number, string> };
+type Saved = { uploadId: string; size: number; name: string; parts: Record<number, string>; /** 암호화 파일 salt: 이어 올릴 때 같은 암호문이 나오게 */ salt?: string };
 
 const savedKey = (shareId: string, fileId: string, kind: string) => `sensedrop.mpu.${shareId}.${fileId}.${kind}`;
 function readSaved(k: string): Saved | null {
@@ -52,6 +53,7 @@ export async function uploadFile({
   blob,
   name = "",
   headers,
+  shareKey,
   onProgress,
 }: {
   shareId: string;
@@ -60,16 +62,22 @@ export async function uploadFile({
   blob: Blob;
   name?: string;
   headers: Record<string, string>;
+  /** 링크 열쇠: 있으면 이 브라우저에서 잠근 뒤 올려요 (종단간 암호화) */
+  shareKey?: Uint8Array<ArrayBuffer> | null;
   /** 0~1 */
   onProgress?: (ratio: number) => void;
 }): Promise<FileStatus> {
   const base = `/api/shares/${shareId}/files/${fileId}`;
-  if (blob.size <= MULTIPART_THRESHOLD) {
+  const source = (salt?: string): Promise<Source> => (shareKey ? encryptedSource(shareKey, blob, salt) : Promise.resolve(plainSource(blob)));
+  const fullSize = shareKey ? (await source()).size : blob.size;
+  if (fullSize <= MULTIPART_THRESHOLD) {
+    const src = await source();
+    const body = await src.slice(0, src.size);
     const res = await retry(() =>
       api<{ status: FileStatus }>(`${base}?kind=${kind}`, {
         method: "PUT",
         headers: { ...headers, "Content-Type": "application/octet-stream" },
-        body: blob,
+        body,
       }),
     );
     onProgress?.(1);
@@ -77,15 +85,16 @@ export async function uploadFile({
   }
 
   const k = savedKey(shareId, fileId, kind);
-  const total = Math.ceil(blob.size / PART_SIZE);
+  const total = Math.ceil(fullSize / PART_SIZE);
   for (let attempt = 0; attempt < 2; attempt++) {
     let saved = readSaved(k);
-    if (!saved || saved.size !== blob.size || saved.name !== name) {
+    if (!saved || saved.size !== blob.size || saved.name !== name || Boolean(shareKey) !== Boolean(saved.salt)) {
       const start = await retry(() => api<{ uploadId: string }>(`${base}/mpu?kind=${kind}`, { method: "POST", headers }));
-      saved = { uploadId: start.uploadId, size: blob.size, name, parts: {} };
+      saved = { uploadId: start.uploadId, size: blob.size, name, parts: {}, salt: shareKey ? (await source()).salt : undefined };
       writeSaved(k, saved);
     }
     const s = saved;
+    const src = await source(s.salt);
     const todo = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !s.parts[n]);
     onProgress?.((total - todo.length) / total);
     try {
@@ -93,7 +102,7 @@ export async function uploadFile({
       const queue = [...todo];
       const worker = async () => {
         for (let n = queue.shift(); n != null; n = queue.shift()) {
-          const part = blob.slice((n - 1) * PART_SIZE, Math.min(blob.size, n * PART_SIZE));
+          const part = await src.slice((n - 1) * PART_SIZE, Math.min(src.size, n * PART_SIZE));
           const res = await retry(() =>
             api<{ partNumber: number; etag: string }>(`${base}/mpu/${s.uploadId}/${n}?kind=${kind}`, {
               method: "PUT",

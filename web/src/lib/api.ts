@@ -29,6 +29,8 @@ export type ManagedFile = {
   status: FileStatus;
   error: string | null;
   pdfSize: number | null;
+  /** 잠긴 파일 이름 (암호화 링크). name 은 '파일 1.hwp' 같은 자리 표시 */
+  nameEnc?: string | null;
 };
 
 export type ManagedShare = {
@@ -39,6 +41,8 @@ export type ManagedShare = {
   createdAt: string;
   expiresAt: string;
   url: string;
+  /** 종단간 암호화 정보. 비밀번호를 알아야 wrap 을 풀 수 있어요 */
+  enc?: { iter: number; salt: string; wrap: string | null; pepper: string } | null;
   files: ManagedFile[];
 };
 
@@ -46,6 +50,7 @@ export type DownloadItem = {
   fileId: string;
   kind: "pdf" | "original";
   name: string;
+  nameEnc?: string | null;
   status: FileStatus;
   size: number | null;
 };

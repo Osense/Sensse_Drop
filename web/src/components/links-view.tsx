@@ -6,6 +6,7 @@ import { Check, ChevronLeft, Copy, Download, Eye, FolderOpen, HardDrive, Link2, 
 import { Countdown } from "@/components/countdown";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
+import { localNames } from "@/lib/e2e";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { api, localLinks, type ShareSummary } from "@/lib/api";
@@ -258,8 +259,8 @@ export function LinksView() {
                       {r.files.map((f) => (
                         <li key={f.id} className="flex max-w-full items-center gap-2 rounded-lg border bg-background px-2 py-1">
                           <FileBadge ext={f.ext} className="h-5 min-w-9 text-[9px]" />
-                          <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={f.name}>
-                            {f.name}
+                          <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={localNames.get(r.id)[f.id] ?? f.name}>
+                            {localNames.get(r.id)[f.id] ?? f.name}
                           </span>
                           <span className="text-[11px] tabular-nums text-muted-foreground">
                             {formatSize(f.size)} · <Download className="inline size-3 align-[-2px]" /> {f.downloads}

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Eye, EyeOff, FileUp, Lock, Plus, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Eye, EyeOff, FileUp, Lock, Plus, ShieldCheck, Sparkles, TriangleAlert, X } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
 import { StatusPill } from "@/components/status-pill";
@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { RadioCard } from "@/components/ui/radio-card";
 import { api, ApiError, localLinks } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
+import { encryptName, localNames, newPasswordKeys, newShareKey } from "@/lib/e2e";
 import { periodLabel, sizeLabel, usePlan } from "@/lib/use-plan";
 import { Dialog } from "@/components/ui/dialog";
 import { ExpirePicker, fromLocalInput } from "@/components/expire-picker";
@@ -36,7 +37,7 @@ const OUTPUTS = [
 ] as const;
 
 type Picked = { key: string; file: File; label: string; status: "waiting" | "uploading" | "converting" | "done" | "error"; error?: string; note?: string };
-type Created = { id: string; adminToken: string; password: string };
+type Created = { id: string; adminToken: string; password: string; shareKey: Uint8Array<ArrayBuffer> };
 
 export function HostView() {
   const auth = useAuth();
@@ -59,6 +60,7 @@ export function HostView() {
   const [beyond, setBeyond] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [phase, setPhase] = React.useState<string | null>(null);
   const [over, setOver] = React.useState(false);
   const [created, setCreated] = React.useState<Created | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -115,21 +117,38 @@ export function HostView() {
 
     setBusy(true);
     try {
+      // 종단간 암호화: 비밀번호에서 열쇠를 만들어요. 서버에는 비밀번호도, 진짜 파일 이름도 보내지 않아요.
+      setPhase("비밀번호로 열쇠 만드는 중…");
+      const pw = await newPasswordKeys(password);
+      const names = files.map((p) => displayName(p.label, p.file.name));
       const headers = { "Content-Type": "application/json", ...(await auth.authHeaders()) };
-      const res = await api<{ id: string; adminToken: string; files: { id: string }[] }>("/api/shares", {
+      const res = await api<{ id: string; adminToken: string; pepper: string; files: { id: string }[] }>("/api/shares", {
         method: "POST",
         headers,
         body: JSON.stringify({
           title,
           message,
-          password,
+          authKey: pw.authKey,
+          kdf: { iter: pw.meta.iter, salt: pw.meta.salt },
           output,
           ...(at ? { expiresAt: at.toISOString() } : { expireMinutes: expire }),
           acceptBeyondPlan,
-          files: files.map((p) => ({ name: displayName(p.label, p.file.name), size: p.file.size })),
+          files: files.map((p) => ({ name: `file.${extOf(p.file.name)}`, size: p.file.size })),
         }),
       });
       localLinks.add({ id: res.id, adminToken: res.adminToken, title: title || "배포 자료", createdAt: new Date().toISOString() });
+      // 링크 열쇠를 만들어 비밀번호 열쇠로 감싸 맡기고, 파일 이름도 잠가서 보내요
+      const { key: shareKey, wrap } = await newShareKey(pw.pwKey, res.pepper, res.id);
+      await api(`/api/shares/${res.id}/key`, {
+        method: "POST",
+        headers: { "X-Admin-Token": res.adminToken, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wrap,
+          names: await Promise.all(res.files.map(async (f, i) => ({ id: f.id, enc: await encryptName(shareKey, f.id, names[i]) }))),
+        }),
+      });
+      localNames.set(res.id, Object.fromEntries(res.files.map((f, i) => [f.id, names[i]])));
+      setPhase(null);
 
       // 파일마다: 이 브라우저에서 PDF로 바꾼 뒤 올립니다. (원본은 필요할 때만 올려요)
       for (let i = 0; i < files.length; i++) {
@@ -147,6 +166,7 @@ export function HostView() {
             blob: body,
             name: p.file.name,
             headers: { "X-Admin-Token": res.adminToken },
+            shareKey,
             onProgress: (r) => body.size > 8 * 1024 * 1024 && setStatus(p.key, "uploading", undefined, `${Math.floor(r * 100)}%`),
           }).then((status) => ({ status }));
         try {
@@ -181,7 +201,7 @@ export function HostView() {
           setStatus(p.key, "error", (err as Error).message);
         }
       }
-      setCreated({ id: res.id, adminToken: res.adminToken, password });
+      setCreated({ id: res.id, adminToken: res.adminToken, password, shareKey });
       refreshPlan();
     } catch (err) {
       const data = (err as ApiError).data;
@@ -189,6 +209,7 @@ export function HostView() {
       else setNotice((err as Error).message);
     } finally {
       setBusy(false);
+      setPhase(null);
     }
   }
 
@@ -210,7 +231,7 @@ export function HostView() {
   if (created) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-        <ShareManager id={created.id} headers={headersFor} password={created.password} onDeleted={reset} onMissing={reset} />
+        <ShareManager id={created.id} headers={headersFor} password={created.password} shareKey={created.shareKey} onDeleted={reset} onMissing={reset} />
         <div className="mt-4 flex justify-center">
           <Button variant="outline" onClick={reset}>
             <Plus /> 새 링크 만들기
@@ -428,8 +449,15 @@ export function HostView() {
               <p className="text-xs text-muted-foreground">링크를 받은 사람이 이 비밀번호를 넣어야 파일 목록이 보여요.</p>
             </div>
             <Button type="submit" variant="brand" size="lg" className="w-full" disabled={busy}>
-              {busy ? "바꾸고 올리는 중… 창을 닫지 마세요" : "공유 링크 만들기"}
+              {busy ? phase ?? "잠그고 올리는 중… 창을 닫지 마세요" : "공유 링크 만들기"}
             </Button>
+            <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <ShieldCheck className="mt-px size-3.5 shrink-0 text-brand" />
+              <span>
+                파일과 파일 이름은 이 브라우저에서 비밀번호로 잠근 뒤 올라가요. 서버에는 잠긴 파일만 있어서 쎈스드롭 운영자도 열어 볼 수 없어요.
+                비밀번호를 잊으면 아무도 풀 수 없으니, 짐작하기 어려운 비밀번호를 쓰세요.
+              </span>
+            </p>
             {notice && <p className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm text-destructive">{notice}</p>}
           </Card>
         </form>
