@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Download, Loader2, Lock } from "lucide-react";
+import { Download, Loader2, Lock, ShieldCheck } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,12 @@ import { Countdown } from "@/components/countdown";
 import { STATIC_ONLY } from "@/lib/config";
 import { api, type CollectInfo, type DownloadItem } from "@/lib/api";
 import { SubmitView } from "@/components/submit-view";
-import { extOf, formatDate, formatSize } from "@/lib/format";
+import { baseOf, extOf, formatDate, formatSize } from "@/lib/format";
+import { decryptName, decryptStream, derivePassword, pickSaveTarget, saveDecrypted, sessionKeys, unwrapShareKey } from "@/lib/e2e";
 
-type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean };
+const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", mp4: "video/mp4", mp3: "audio/mpeg" };
+
+type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean; kdf?: { iter: number; salt: string } | null };
 const isCollect = (i: Info | CollectInfo): i is CollectInfo => (i as CollectInfo).kind === "collect";
 type State = "loading" | "login" | "list" | "gone";
 
@@ -29,6 +32,10 @@ export function ShareView() {
   const [pw, setPw] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [checking, setChecking] = React.useState(false);
+  /** 이 링크의 열쇠 (비밀번호에서 풀어 이 탭에만 둬요) */
+  const keyRef = React.useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const [names, setNames] = React.useState<Record<string, string>>({});
+  const [progress, setProgress] = React.useState<Record<string, string>>({});
   const timer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
   /** 카운트다운이 끝나면 목록을 닫습니다 (서버에서도 만료된 링크는 열리지 않아요) */
   const expire = React.useCallback(() => {
@@ -42,6 +49,16 @@ export function ShareView() {
       const data = await api<{ items: DownloadItem[]; message?: string }>(`/api/s/${shareId}/files`);
       setItems(data.items);
       setMessage(data.message ?? "");
+      const k = keyRef.current;
+      if (k) {
+        const pairs = await Promise.all(
+          data.items.filter((i) => i.nameEnc).map(async (i) => {
+            const real = await decryptName(k, i.fileId, i.nameEnc!).catch(() => null);
+            return [`${i.fileId}-${i.kind}`, real == null ? i.name : i.kind === "pdf" ? `${baseOf(real)}.pdf` : real] as const;
+          }),
+        );
+        setNames(Object.fromEntries(pairs));
+      }
       setState("list");
       clearTimeout(timer.current);
       if (data.items.some((i) => i.status === "uploading" || i.status === "converting")) {
@@ -71,7 +88,9 @@ export function ShareView() {
         }
         setInfo(i);
         document.title = `${i.title} · 쎈스드롭`;
-        if (i.authed) loadList(shareId);
+        // 잠긴 링크는 열쇠가 이 탭에 있어야 목록을 보여 줘요 (없으면 비밀번호를 다시 물어요)
+        keyRef.current = i.kdf ? sessionKeys.get(shareId) : null;
+        if (i.authed && (!i.kdf || keyRef.current)) loadList(shareId);
         else setState("login");
       })
       .catch(() => setState("gone"));
@@ -83,16 +102,75 @@ export function ShareView() {
     setChecking(true);
     setError(null);
     try {
-      await api(`/api/s/${id}/auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pw }),
-      });
+      if (info?.kdf) {
+        // 비밀번호는 서버로 보내지 않아요: 이 브라우저에서 열쇠와 확인용 값을 만들어 확인용 값만 보내요
+        const { pwKey, authKey } = await derivePassword(pw, info.kdf.salt, info.kdf.iter);
+        const res = await api<{ wrap: string; pepper: string }>(`/api/s/${id}/auth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ authKey }),
+        });
+        const k = await unwrapShareKey(pwKey, res.pepper, id, res.wrap);
+        keyRef.current = k;
+        sessionKeys.set(id, k);
+      } else {
+        await api(`/api/s/${id}/auth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw }),
+        });
+      }
       await loadList(id);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setChecking(false);
+    }
+  }
+
+  /** 잠긴 파일: 받으면서 이 브라우저에서 풀어 저장 */
+  async function downloadEncrypted(item: DownloadItem, name: string) {
+    const k = keyRef.current;
+    if (!k) return setState("login");
+    const tag = `${item.fileId}-${item.kind}`;
+    if (progress[tag]) return;
+    const ext = item.kind === "pdf" ? "pdf" : extOf(name);
+    try {
+      const target = await pickSaveTarget(name, item.size).catch((e: Error) => {
+        if (e.name === "AbortError") throw e;
+        return null;
+      });
+      setProgress((p) => ({ ...p, [tag]: "받는 중" }));
+      let body: ReadableStream<Uint8Array>;
+      let total = item.size ?? 0;
+      if (STATIC_ONLY) {
+        const blob = await (await import("@/lib/mock-api")).mockDownloadBlob(id, item.fileId, item.kind);
+        body = blob.stream();
+        total = blob.size;
+      } else {
+        const res = await fetch(`/api/s/${id}/download/${item.fileId}/${item.kind}`, { credentials: "same-origin" });
+        if (res.status === 401) {
+          setState("login");
+          throw new Error("비밀번호를 다시 넣어 주세요.");
+        }
+        if (!res.ok || !res.body) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error || "파일을 받지 못했어요.");
+        body = res.body;
+        total = Number(res.headers.get("Content-Length")) || total;
+      }
+      await saveDecrypted(
+        name,
+        MIME[ext] ?? "application/octet-stream",
+        (write) => decryptStream(k, body, write, (n) => total > 4 * 1024 * 1024 && setProgress((p) => ({ ...p, [tag]: `${Math.min(99, Math.floor((n / total) * 100))}%` }))),
+        target,
+      );
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") alert((e as Error).message);
+    } finally {
+      setProgress((p) => {
+        const next = { ...p };
+        delete next[tag];
+        return next;
+      });
     }
   }
 
@@ -163,15 +241,22 @@ export function ShareView() {
             <ul className="space-y-2.5">
               {items.map((item) => {
                 const ready = item.status === "done";
-                const ext = item.kind === "pdf" ? "pdf" : extOf(item.name);
+                const tag = `${item.fileId}-${item.kind}`;
+                const name = names[tag] ?? item.name;
+                const busy = progress[tag];
+                const ext = item.kind === "pdf" ? "pdf" : extOf(name);
                 const body = (
                   <>
                     <FileBadge ext={ext} className="h-10 min-w-12" />
                     <span className="min-w-0 flex-1">
-                      <span className="block break-words font-semibold leading-snug">{item.name}</span>
-                      <span className="block text-xs text-muted-foreground">{formatSize(item.size)}</span>
+                      <span className="block break-words font-semibold leading-snug">{name}</span>
+                      <span className="block text-xs text-muted-foreground">{busy ? `${busy} · 잠금 푸는 중` : formatSize(item.size)}</span>
                     </span>
-                    {ready ? (
+                    {busy ? (
+                      <span className="grid size-10 shrink-0 place-items-center rounded-full bg-brand/10 text-brand">
+                        <Loader2 className="size-4 animate-spin" />
+                      </span>
+                    ) : ready ? (
                       <span className="grid size-10 shrink-0 place-items-center rounded-full bg-gradient-to-br from-brand to-brand-2 text-white shadow-md shadow-brand/25">
                         <Download className="size-4" />
                       </span>
@@ -185,14 +270,19 @@ export function ShareView() {
                     {ready ? (
                       <a
                         href={`/api/s/${id}/download/${item.fileId}/${item.kind}`}
-                        download={item.name}
+                        download={name}
                         onClick={
-                          STATIC_ONLY
+                          item.nameEnc
                             ? (e) => {
                                 e.preventDefault();
-                                import("@/lib/mock-api").then((m) => m.mockDownload(id, item.fileId, item.kind, item.name)).catch((err) => alert(err.message));
+                                downloadEncrypted(item, name);
                               }
-                            : undefined
+                            : STATIC_ONLY
+                              ? (e) => {
+                                  e.preventDefault();
+                                  import("@/lib/mock-api").then((m) => m.mockDownload(id, item.fileId, item.kind, item.name)).catch((err) => alert(err.message));
+                                }
+                              : undefined
                         }
                         className="flex min-h-16 items-center gap-3 rounded-xl border bg-card p-3.5 shadow-sm transition-all hover:border-brand/50 hover:bg-brand/5 active:scale-[0.99]"
                       >
@@ -206,6 +296,11 @@ export function ShareView() {
               })}
             </ul>
             <p className="mt-4 text-center text-xs text-muted-foreground">파일을 누르면 바로 내려받아져요.</p>
+            {info?.kdf && (
+              <p className="mt-2 flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
+                <ShieldCheck className="size-3.5 text-brand" /> 비밀번호로 잠긴 파일이라, 이 기기에서 잠금을 풀며 받아요.
+              </p>
+            )}
           </>
         )}
       </div>

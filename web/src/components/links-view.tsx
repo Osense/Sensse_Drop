@@ -7,13 +7,17 @@ import { CollectManager } from "@/components/collect-manager";
 import { Countdown } from "@/components/countdown";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
+import { decryptName, localNames, sessionKeys, unlockWithPassword } from "@/lib/e2e";
+import { Dialog } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { api, downloadOwnFile, localLinks, type ShareSummary } from "@/lib/api";
+import { api, downloadOwnFile, localLinks, type ManagedShare, type ShareSummary } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { STATIC_ONLY } from "@/lib/config";
 import { formatDate, formatSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { isHangul } from "@/lib/file-types";
 import { usePlan } from "@/lib/use-plan";
 import { LapseBanner } from "@/components/host-view";
 
@@ -100,14 +104,49 @@ export function LinksView() {
 
   const [getting, setGetting] = React.useState<string | null>(null);
   /** 내가 보낸 파일 받아 보기 (무엇을 보냈는지 확인) */
-  async function getOwn(shareId: string, f: ShareSummary["files"][number]) {
+  async function getOwn(shareId: string, f: ShareSummary["files"][number], k?: Uint8Array<ArrayBuffer>) {
+    const row = rows?.find((r) => !isGone(r) && r.id === shareId) as ShareSummary | undefined;
     setGetting(f.id);
     try {
-      await downloadOwnFile(`/api/shares/${shareId}/files/${f.id}/download`, await headersFor(shareId)(), f.name);
+      const h = await headersFor(shareId)();
+      let name = localNames.get(shareId)[f.id] ?? f.name;
+      let key: Uint8Array<ArrayBuffer> | null = null;
+      if (row?.encrypted) {
+        // 잠긴 링크: 이 탭에 열쇠가 없으면 비밀번호를 물어 풀어요
+        const share = await api<ManagedShare>(`/api/shares/${shareId}/manage`, { headers: h });
+        key = k ?? sessionKeys.get(shareId);
+        if (!key) {
+          if (share.enc) setUnlock({ shareId, f, enc: share.enc });
+          return;
+        }
+        const mf = share.files.find((x) => x.id === f.id);
+        if (mf?.nameEnc) name = await decryptName(key, f.id, mf.nameEnc).catch(() => name);
+        // 한글을 PDF로만 보낸 링크는 PDF 를 받아요 (worker 기본값과 같음)
+        if (isHangul(f.ext) && share.output === "pdf") name = name.replace(/\.[A-Za-z0-9]+$/, "") + ".pdf";
+      }
+      await downloadOwnFile(`/api/shares/${shareId}/files/${f.id}/download`, h, name, key);
     } catch (e) {
       alert((e as Error).message);
     } finally {
       setGetting(null);
+    }
+  }
+
+  const [unlock, setUnlock] = React.useState<{ shareId: string; f: ShareSummary["files"][number]; enc: NonNullable<ManagedShare["enc"]> } | null>(null);
+  const [unlockPw, setUnlockPw] = React.useState("");
+  const [unlockErr, setUnlockErr] = React.useState<string | null>(null);
+  async function doUnlock(e: React.FormEvent) {
+    e.preventDefault();
+    if (!unlock) return;
+    setUnlockErr(null);
+    try {
+      const k = await unlockWithPassword(unlock.shareId, unlock.enc, unlockPw);
+      const next = unlock;
+      setUnlock(null);
+      setUnlockPw("");
+      getOwn(next.shareId, next.f, k);
+    } catch (err) {
+      setUnlockErr((err as Error).message);
     }
   }
 
@@ -282,8 +321,8 @@ export function LinksView() {
                         const inner = (
                           <>
                             <FileBadge ext={f.ext} className="h-5 min-w-9 text-[9px]" />
-                            <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={f.name}>
-                              {f.name}
+                            <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={localNames.get(r.id)[f.id] ?? f.name}>
+                              {localNames.get(r.id)[f.id] ?? f.name}
                             </span>
                             <span className="text-[11px] tabular-nums text-muted-foreground">
                               {formatSize(f.size)} · 받아 감 {f.downloads}
@@ -355,6 +394,26 @@ export function LinksView() {
         링크는 정한 시간이 되거나 직접 닫으면 바로 열리지 않고, 올린 파일도 곧바로 지워요. 무엇을 언제 나눠 줬는지 확인할 수 있게 기록만 30일 동안 남겨 두고, 그 뒤에는 저절로 지워요.
         {STATIC_ONLY && " 체험판에서는 이 브라우저 안에만 저장돼요."}
       </p>
+
+      <Dialog
+        open={unlock != null}
+        onClose={() => setUnlock(null)}
+        title="비밀번호를 넣어 주세요"
+        description="파일은 이 링크의 비밀번호로 잠겨 있어요. 서버는 비밀번호를 모르기 때문에, 내가 보낸 파일도 비밀번호로 풀어서 받아요."
+      >
+        <form onSubmit={doUnlock} className="mt-4 space-y-3">
+          <Input type="password" autoFocus autoComplete="off" value={unlockPw} onChange={(e) => setUnlockPw(e.target.value)} placeholder="링크 비밀번호" className="h-11" />
+          {unlockErr && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{unlockErr}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setUnlock(null)}>
+              취소
+            </Button>
+            <Button type="submit" variant="brand" disabled={!unlockPw}>
+              확인하고 받기
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

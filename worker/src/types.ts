@@ -9,6 +9,8 @@ export interface Env {
   SUPABASE_SECRET_KEY?: string;
   /** secret: 열람 쿠키 서명용. 없으면 SUPABASE_SECRET_KEY 로 대신 */
   SESSION_SECRET?: string;
+  /** secret: 파일 열쇠 pepper 용 (종단간 암호화). 없으면 SESSION_SECRET 등으로 대신 */
+  FILE_KEY_SECRET?: string;
   PUBLIC_URL?: string;
 
   GUEST_MAX_FILES?: string;
@@ -32,6 +34,8 @@ export interface FileRow {
   error: string | null;
   pdf_size: number | null;
   original_uploaded: boolean;
+  /** 잠긴 파일 이름 (종단간 암호화 링크). 이때 original_name 은 '파일 1.hwp' 같은 자리 표시 */
+  name_enc?: string | null;
   /** 받는 사람이 내려받은 횟수 */
   download_count?: number;
   /** 수합 링크: 파일을 낸 사람이 적은 이름 */
@@ -62,6 +66,8 @@ export interface ShareRow {
   plan?: "guest" | "member" | "pro";
   /** 만든 회원이 탈퇴한 시각 */
   orphaned_at?: string | null;
+  /** 종단간 암호화 정보 (없으면 예전 평문 링크) */
+  enc?: import("./e2e").EncMeta | null;
   /** share: 나눠 주기 · collect: 수합 (없으면 share) */
   kind?: "share" | "collect";
   /** 수합 설정 */
@@ -102,6 +108,8 @@ export interface ShareSummary {
   /** 기록이 저절로 지워지는 시각 */
   forgetAt: string | null;
   member: boolean;
+  /** 종단간 암호화 링크인지 */
+  encrypted?: boolean;
   opens: number;
   downloads: number;
   /** 지금 차지하는 저장 공간 (닫힌 링크는 0) */

@@ -7,6 +7,7 @@
  */
 import { BASE_PATH } from "./config";
 import { ALLOWED_EXT, isHangul } from "./file-types";
+import { encSize } from "./e2e";
 import { EXPIRE_OPTIONS, MIN_CUSTOM_MINUTES, MULTIPART_THRESHOLD, PART_SIZE, PLANS, type Plan } from "./plans";
 
 class MockError extends Error {
@@ -29,6 +30,7 @@ type MockFile = {
   pdfSize: number | null;
   originalUploaded: boolean;
   downloads?: number;
+  nameEnc?: string | null;
   /** 수합: 낸 사람 이름 · 토큰 · 낸 시각 */
   submitter?: string | null;
   submitToken?: string | null;
@@ -49,6 +51,8 @@ type MockShare = {
   closedAt?: string | null;
   purgedAt?: string | null;
   openCount?: number;
+  /** 종단간 암호화 (password 자리에는 비밀번호 대신 확인용 값) */
+  enc?: { iter: number; salt: string; wrap: string | null; pepper: string };
   files: MockFile[];
   kind?: "share" | "collect";
   collect?: MockCollect | null;
@@ -142,6 +146,7 @@ function summary(s: MockShare) {
     purged: Boolean(s.purgedAt),
     forgetAt: s.purgedAt ? new Date(Date.parse(s.purgedAt) + HISTORY_DAYS * 86400000).toISOString() : null,
     member: s.member,
+    encrypted: Boolean(s.enc),
     opens: s.openCount ?? 0,
     downloads: files.reduce((n, f) => n + f.downloads, 0),
     bytes: state === "open" && !s.purgedAt ? s.files.reduce((n, f) => n + stored(s, f), 0) : 0,
@@ -161,11 +166,11 @@ function status(s: MockShare, f: MockFile): MockFile["status"] {
 }
 
 function items(s: MockShare) {
-  const out: { fileId: string; kind: "pdf" | "original"; name: string; status: string; size: number | null }[] = [];
+  const out: { fileId: string; kind: "pdf" | "original"; name: string; nameEnc: string | null; status: string; size: number | null }[] = [];
   for (const f of s.files) {
     if (needsPdf(s, f))
-      out.push({ fileId: f.id, kind: "pdf", name: `${baseName(f.name)}.pdf`, status: f.pdfSize != null ? "done" : f.status === "error" ? "error" : "converting", size: f.pdfSize });
-    if (needsOriginal(s, f)) out.push({ fileId: f.id, kind: "original", name: f.name, status: f.originalUploaded ? "done" : "uploading", size: f.size });
+      out.push({ fileId: f.id, kind: "pdf", name: `${baseName(f.name)}.pdf`, nameEnc: f.nameEnc ?? null, status: f.pdfSize != null ? "done" : f.status === "error" ? "error" : "converting", size: f.pdfSize });
+    if (needsOriginal(s, f)) out.push({ fileId: f.id, kind: "original", name: f.name, nameEnc: f.nameEnc ?? null, status: f.originalUploaded ? "done" : "uploading", size: f.size });
   }
   return out;
 }
@@ -294,8 +299,8 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     if (member && plan.quotaMb != null && (await usage()) + total > plan.quotaMb * MB) {
       throw new MockError(`${plan.name}은 열려 있는 링크의 파일을 합쳐 ${plan.quotaMb >= 1024 ? `${plan.quotaMb / 1024}GB` : `${plan.quotaMb}MB`}까지 둘 수 있어요. 배포 기록에서 다 쓴 링크를 닫으면 자리가 생겨요.`, 400);
     }
-    const pw = String(b.password ?? "");
-    if (pw.length < 4) throw new MockError("비밀번호는 4~64자로 정해 주세요.", 400);
+    const pw = String(b.authKey ?? "");
+    if (pw.length !== 43 || !b.kdf?.salt) throw new MockError("페이지를 새로고침한 뒤 다시 해 주세요.", 400);
     const expiresAt = resolveExpiry(b, plan);
     const now = Date.now();
     const share: MockShare = {
@@ -309,10 +314,11 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
       plan: plan.id,
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(expiresAt).toISOString(),
-      files: files.map((f) => ({ id: rid(8), name: String(f.name).slice(0, 200), ext: extOf(f.name), size: f.size, status: "uploading", error: null, pdfSize: null, originalUploaded: false })),
+      enc: { iter: Number(b.kdf.iter), salt: String(b.kdf.salt), wrap: null, pepper: rid(43) },
+      files: files.map((f, i) => ({ id: rid(8), name: `파일 ${i + 1}.${extOf(f.name)}`, ext: extOf(f.name), size: f.size, status: "uploading", error: null, pdfSize: null, originalUploaded: false })),
     };
     await putShare(share);
-    return { id: share.id, adminToken: share.adminToken, url: shareUrl(share.id), files: share.files.map((f) => ({ id: f.id, name: f.name })) } as T;
+    return { id: share.id, adminToken: share.adminToken, url: shareUrl(share.id), pepper: share.enc!.pepper, files: share.files.map((f) => ({ id: f.id, name: f.name })) } as T;
   }
 
   if (path === "/api/me/shares") {
@@ -329,6 +335,19 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
       if (s && s.adminToken === l.token) out.push(summary(s));
     }
     return { shares: out } as T;
+  }
+
+  if ((m = /^\/api\/shares\/(\w+)\/key$/.exec(path)) && method === "POST") {
+    const s = await manageable(m[1], init);
+    if (!s.enc || s.enc.wrap) throw new MockError("이미 열쇠가 있어요.", 409);
+    const b = await body();
+    s.enc.wrap = String(b.wrap);
+    for (const n of Array.isArray(b.names) ? b.names : []) {
+      const f = s.files.find((x) => x.id === n.id);
+      if (f) f.nameEnc = String(n.enc);
+    }
+    await putShare(s);
+    return { ok: true } as T;
   }
 
   // ---------- 수합 (worker 와 같은 규칙) ----------
@@ -475,13 +494,14 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     if (!f) throw new MockError("파일이 없어요.", 404);
     const kind = u.searchParams.get("kind") === "original" ? "original" : "pdf";
     const partKey = (up: string, n: number) => `${blobKey(s.id, f.id, kind)}#${up}#${String(n).padStart(5, "0")}`;
-    const parts = Math.ceil(f.size / PART_SIZE);
+    const full = s.enc ? encSize(f.size) : f.size;
+    const parts = Math.ceil(full / PART_SIZE);
     if (!m[3] && method === "POST") return { uploadId: rid(16), partSize: PART_SIZE, parts } as T;
     const up = m[3];
     if (m[4] && m[4] !== "complete" && method === "PUT") {
       const n = Number(m[4]);
       const blob = init?.body as Blob;
-      const want = n < parts ? PART_SIZE : f.size - PART_SIZE * (parts - 1);
+      const want = n < parts ? PART_SIZE : full - PART_SIZE * (parts - 1);
       if (n < 1 || n > parts || blob.size !== want) throw new MockError("조각 크기가 올바르지 않아요.", 400);
       await tx("blobs", "readwrite", (st) => st.put(blob, partKey(up, n)));
       return { partNumber: n, etag: `mock-${up}-${n}` } as T;
@@ -494,7 +514,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
         list.push(blob);
       }
       const whole = new Blob(list);
-      if (whole.size !== f.size) throw new MockError("처음에 고른 파일과 크기가 달라요.", 400);
+      if (whole.size !== full) throw new MockError("처음에 고른 파일과 크기가 달라요.", 400);
       await tx("blobs", "readwrite", (st) => st.put(whole, blobKey(s.id, f.id, kind)));
       for (let n = 1; n <= parts; n++) await tx("blobs", "readwrite", (st) => st.delete(partKey(up, n)));
       if (kind === "pdf") Object.assign(f, { pdfSize: whole.size, error: null });
@@ -528,7 +548,8 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
       kind: s.kind ?? "share",
       collect: s.collect ? { ...s.collect, hasPassword: Boolean(s.password) } : null,
       purged: Boolean(s.purgedAt),
-      files: s.files.map((f) => ({ id: f.id, name: f.name, ext: f.ext, size: f.size, status: f.status, error: f.error, pdfSize: f.pdfSize, submitter: f.submitter ?? null, createdAt: f.createdAt ?? null })),
+      enc: s.enc ?? null,
+      files: s.files.map((f) => ({ id: f.id, name: f.name, nameEnc: f.nameEnc ?? null, ext: f.ext, size: f.size, status: f.status, error: f.error, pdfSize: f.pdfSize, submitter: f.submitter ?? null, createdAt: f.createdAt ?? null })),
     } as T;
   }
 
@@ -555,18 +576,19 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
         maxFileMb: PLANS[s.plan ?? "member"].maxFileMb,
       } as T;
     }
-    return { title: s.title, message: s.message, expiresAt: s.expiresAt, fileCount: items(s).length, authed: authed(s.id) } as T;
+    return { title: s.title, message: s.message, expiresAt: s.expiresAt, fileCount: items(s).length, kdf: s.enc ? { iter: s.enc.iter, salt: s.enc.salt } : null, authed: authed(s.id) } as T;
   }
 
   if ((m = /^\/api\/s\/(\w+)\/auth$/.exec(path)) && method === "POST") {
     const s = await viewable(m[1]);
     if (s.kind === "collect") throw new MockError("링크가 없어요.", 404);
-    if (String((await body()).password ?? "") !== s.password) throw new MockError("비밀번호가 틀렸어요.", 401);
+    const b = await body();
+    if (String((s.enc ? b.authKey : b.password) ?? "") !== s.password) throw new MockError("비밀번호가 틀렸어요.", 401);
     await putShare({ ...s, openCount: (s.openCount ?? 0) + 1 });
     try {
       localStorage.setItem(AUTH_KEY(s.id), String(Date.now() + 12 * 3600 * 1000));
     } catch {}
-    return { ok: true } as T;
+    return { ok: true, ...(s.enc ? { wrap: s.enc.wrap, pepper: s.enc.pepper } : {}) } as T;
   }
 
   if ((m = /^\/api\/s\/(\w+)\/files$/.exec(path))) {
@@ -577,6 +599,20 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   throw new MockError("체험판에서는 쓸 수 없는 기능이에요.", 404);
+}
+
+/** 체험판: 잠긴 파일을 그대로 꺼내기 (푸는 건 받는 화면에서) */
+export async function mockDownloadBlob(id: string, fileId: string, kind: "pdf" | "original") {
+  const s = await viewable(id);
+  if (!authed(s.id)) throw new MockError("비밀번호를 먼저 넣어 주세요.", 401);
+  const blob = await tx<Blob | undefined>("blobs", "readonly", (st) => st.get(blobKey(id, fileId, kind)));
+  if (!blob) throw new MockError("파일이 아직 올라오지 않았어요.", 404);
+  const f = s.files.find((x) => x.id === fileId);
+  if (f) {
+    f.downloads = (f.downloads ?? 0) + 1;
+    await putShare(s);
+  }
+  return blob;
 }
 
 /** 체험판에서 받는 사람이 파일을 누르면: 이 브라우저에 저장된 파일을 내려받기 */

@@ -29,6 +29,8 @@ export type ManagedFile = {
   status: FileStatus;
   error: string | null;
   pdfSize: number | null;
+  /** 잠긴 파일 이름 (암호화 링크). name 은 '파일 1.hwp' 같은 자리 표시 */
+  nameEnc?: string | null;
   /** 수합 링크: 낸 사람 이름 */
   submitter?: string | null;
   createdAt?: string | null;
@@ -67,6 +69,8 @@ export type ManagedShare = {
   createdAt: string;
   expiresAt: string;
   url: string;
+  /** 종단간 암호화 정보. 비밀번호를 알아야 wrap 을 풀 수 있어요 */
+  enc?: { iter: number; salt: string; wrap: string | null; pepper: string } | null;
   files: ManagedFile[];
   kind?: "share" | "collect";
   collect?: CollectSettings | null;
@@ -77,6 +81,7 @@ export type DownloadItem = {
   fileId: string;
   kind: "pdf" | "original";
   name: string;
+  nameEnc?: string | null;
   status: FileStatus;
   size: number | null;
 };
@@ -97,6 +102,8 @@ export type ShareSummary = {
   /** 기록이 저절로 지워지는 시각 */
   forgetAt: string | null;
   member: boolean;
+  /** 종단간 암호화 링크인지 (파일을 받으려면 링크 열쇠가 필요) */
+  encrypted?: boolean;
   opens: number;
   downloads: number;
   /** 지금 차지하는 저장 공간 */
@@ -148,7 +155,7 @@ export async function apiBlob(url: string, init?: RequestInit): Promise<Blob> {
 }
 
 /** 링크 주인이 올린 파일 받아서 저장 (이름은 서버가 정한 이름, 없으면 fallback) */
-export async function downloadOwnFile(url: string, headers: Record<string, string>, fallback: string) {
+export async function downloadOwnFile(url: string, headers: Record<string, string>, fallback: string, key?: Uint8Array<ArrayBuffer> | null) {
   let blob: Blob;
   let name = fallback;
   if (STATIC_ONLY) {
@@ -174,6 +181,16 @@ export async function downloadOwnFile(url: string, headers: Record<string, strin
       } catch {}
     }
     blob = await res.blob();
+  }
+  // 잠긴 파일: 링크 열쇠로 풀어서 저장. 서버가 알려 준 이름은 자리 표시라 진짜 이름(fallback)으로
+  if (key) {
+    const { decryptStream } = await import("./e2e");
+    const parts: Blob[] = [];
+    await decryptStream(key, blob.stream(), (c) => {
+      parts.push(new Blob([c.slice()]));
+    });
+    blob = new Blob(parts);
+    name = fallback;
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

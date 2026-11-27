@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import QRCode from "qrcode";
-import { Check, Copy, Download, ExternalLink, Loader2, Lock, RotateCw, Upload } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Loader2, Lock, RotateCw, ShieldCheck, Upload } from "lucide-react";
 import { uploadFile } from "@/lib/upload";
 import { isHangul } from "@/lib/file-types";
 import { FileBadge } from "@/components/file-badge";
@@ -15,6 +15,8 @@ import { Countdown } from "@/components/countdown";
 import { QrButtons, QrViewer, saveQrImage } from "@/components/qr-viewer";
 import { api, downloadOwnFile, type ManagedFile, type ManagedShare } from "@/lib/api";
 import { hwpToPdf } from "@/lib/convert";
+import { decryptName, localNames, sessionKeys, unlockWithPassword } from "@/lib/e2e";
+import { Dialog } from "@/components/ui/dialog";
 import { formatDate, formatSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +28,7 @@ export function ShareManager({
   id,
   headers,
   password,
+  shareKey,
   onDeleted,
   onMissing,
 }: {
@@ -33,10 +36,26 @@ export function ShareManager({
   headers: () => Promise<Record<string, string>>;
   /** 방금 만든 링크라면 비밀번호를 함께 복사할 수 있게 */
   password?: string;
+  /** 방금 만든 링크의 열쇠 (없으면 비밀번호를 넣어 풀어요) */
+  shareKey?: Uint8Array<ArrayBuffer>;
   onDeleted?: () => void;
   onMissing?: () => void;
 }) {
   const [share, setShare] = React.useState<ManagedShare | null>(null);
+  const [key, setKey] = React.useState<Uint8Array<ArrayBuffer> | null>(() => shareKey ?? sessionKeys.get(id));
+  const [names, setNames] = React.useState<Record<string, string>>(() => localNames.get(id));
+  // 잠긴 파일 이름: 열쇠가 있으면 풀어서 보여 줘요 (없으면 이 기기에 적어 둔 이름, 그것도 없으면 '파일 1.hwp')
+  React.useEffect(() => {
+    if (!key || !share) return;
+    let live = true;
+    Promise.all(share.files.filter((f) => f.nameEnc).map(async (f) => [f.id, await decryptName(key, f.id, f.nameEnc!).catch(() => f.name)] as const)).then((pairs) => {
+      if (live && pairs.length) setNames((n) => ({ ...n, ...Object.fromEntries(pairs) }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [key, share]);
+  const nameOf = (f: { id: string; name: string }) => names[f.id] ?? f.name;
   const [qr, setQr] = React.useState("");
   const [qrOpen, setQrOpen] = React.useState(false);
   const closeQr = React.useCallback(() => setQrOpen(false), []);
@@ -97,24 +116,57 @@ export function ShareManager({
    * 실패한 한글 파일: 같은 파일(또는 직접 만든 PDF)을 다시 골라 이 브라우저에서 바꿔 올리기.
    * 올리다 끊긴 파일: 같은 파일을 다시 골라 이어 올리기 (큰 파일은 올린 조각 다음부터)
    */
-  async function reupload(file: File) {
+  /** 잠긴 링크에 다시 올리려면 열쇠가 필요해요: 비밀번호를 넣어 풀기 */
+  /** 열쇠가 생기면 이어서 할 일: 다시 올릴 파일, 또는 받아 볼 파일 */
+  type Pending = { upload: File } | { get: ManagedFile; kind: "pdf" | "original" };
+  const [unlock, setUnlock] = React.useState<Pending | null>(null);
+  const [unlockPw, setUnlockPw] = React.useState("");
+  const [unlockErr, setUnlockErr] = React.useState<string | null>(null);
+  const [unlocking, setUnlocking] = React.useState(false);
+  async function doUnlock(e: React.FormEvent) {
+    e.preventDefault();
+    if (!share?.enc?.wrap || !unlock) return;
+    setUnlocking(true);
+    setUnlockErr(null);
+    try {
+      const k = await unlockWithPassword(share.id, share.enc, unlockPw);
+      setKey(k);
+      const next = unlock;
+      setUnlock(null);
+      setUnlockPw("");
+      if ("upload" in next) reupload(next.upload, k);
+      else getOwn(next.get, next.kind, k);
+    } catch (err) {
+      setUnlockErr((err as Error).message);
+    } finally {
+      setUnlocking(false);
+    }
+  }
+
+  async function reupload(file: File, k: Uint8Array<ArrayBuffer> | null = key) {
     const fileId = fixTarget.current;
     const f = share?.files.find((x) => x.id === fileId);
     if (!fileId || !share || !f) return;
+    if (share.enc && !k) {
+      setUnlockErr(null);
+      setUnlock({ upload: file });
+      return;
+    }
+    const shareKey = share.enc ? k : null;
     setFixing(fileId);
     try {
       const h = await headers();
       const onProgress = (r: number) => setProgress((p) => ({ ...p, [fileId]: r }));
       if (f.status === "error") {
         const pdf = /\.pdf$/i.test(file.name) ? file : await hwpToPdf(file);
-        await uploadFile({ shareId: id, fileId, kind: "pdf", blob: pdf, headers: h });
+        await uploadFile({ shareId: id, fileId, kind: "pdf", blob: pdf, headers: h, shareKey });
       } else {
-        if (file.size !== f.size) throw new Error(`처음에 고른 파일과 크기가 달라요. '${f.name}'(${formatSize(f.size)})을 골라 주세요.`);
+        if (file.size !== f.size) throw new Error(`처음에 고른 파일과 크기가 달라요. '${nameOf(f)}'(${formatSize(f.size)})을 골라 주세요.`);
         const hangul = isHangul(f.ext);
-        if (f.ext === "pdf") await uploadFile({ shareId: id, fileId, kind: "pdf", blob: file, name: file.name, headers: h, onProgress });
-        if (hangul && share.output !== "original" && f.pdfSize == null) await uploadFile({ shareId: id, fileId, kind: "pdf", blob: await hwpToPdf(file), headers: h });
+        if (f.ext === "pdf") await uploadFile({ shareId: id, fileId, kind: "pdf", blob: file, name: file.name, headers: h, shareKey, onProgress });
+        if (hangul && share.output !== "original" && f.pdfSize == null) await uploadFile({ shareId: id, fileId, kind: "pdf", blob: await hwpToPdf(file), headers: h, shareKey });
         if ((hangul && share.output !== "pdf") || (!hangul && f.ext !== "pdf")) {
-          await uploadFile({ shareId: id, fileId, kind: "original", blob: file, name: file.name, headers: h, onProgress });
+          await uploadFile({ shareId: id, fileId, kind: "original", blob: file, name: file.name, headers: h, shareKey, onProgress });
         }
       }
     } catch (e) {
@@ -127,11 +179,19 @@ export function ShareManager({
 
   const [getting, setGetting] = React.useState<string | null>(null);
   /** 내가 올린 파일 받아 보기 (무엇을 보냈는지 확인) */
-  async function getOwn(f: ManagedFile, kind: "pdf" | "original") {
+  async function getOwn(f: ManagedFile, kind: "pdf" | "original", k: Uint8Array<ArrayBuffer> | null = key) {
+    // 잠긴 링크는 열쇠가 있어야 풀어 볼 수 있어요 (없으면 비밀번호를 물어요)
+    if (share?.enc && !k) {
+      setUnlockErr(null);
+      setUnlock({ get: f, kind });
+      return;
+    }
     setGetting(`${f.id}-${kind}`);
     try {
-      const fallback = kind === "pdf" ? `${f.name.replace(/\.[A-Za-z0-9]+$/, "")}.pdf` : f.name;
-      await downloadOwnFile(`/api/shares/${id}/files/${f.id}/download?kind=${kind}`, await headers(), fallback);
+      let real = nameOf(f);
+      if (k && f.nameEnc) real = await decryptName(k, f.id, f.nameEnc).catch(() => real);
+      const fallback = kind === "pdf" ? `${real.replace(/\.[A-Za-z0-9]+$/, "")}.pdf` : real;
+      await downloadOwnFile(`/api/shares/${id}/files/${f.id}/download?kind=${kind}`, await headers(), fallback, share?.enc ? k : null);
     } catch (e) {
       alert((e as Error).message);
     } finally {
@@ -189,14 +249,21 @@ export function ShareManager({
       </div>
 
       <div className="p-5 sm:p-6">
-        <h3 className="text-sm font-semibold">파일 {share.files.length}개</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">파일 {share.files.length}개</h3>
+          {share.enc && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand" title="파일과 파일 이름은 비밀번호로 잠겨 있어 서버도 열어 볼 수 없어요">
+              <ShieldCheck className="size-3.5" /> 종단간 암호화
+            </span>
+          )}
+        </div>
         <ul className="mt-3 space-y-2">
           {share.files.map((f) => (
             <li key={f.id} className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
               <FileBadge ext={f.ext} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium" title={f.name}>
-                  {f.name}
+                <span className="block truncate text-sm font-medium" title={nameOf(f)}>
+                  {nameOf(f)}
                 </span>
                 {f.error ? (
                   <span className="block truncate text-xs text-destructive" title={f.error}>
@@ -286,6 +353,25 @@ export function ShareManager({
           </button>
         </div>
       </div>
+      <Dialog
+        open={unlock != null}
+        onClose={() => setUnlock(null)}
+        title="비밀번호를 넣어 주세요"
+        description="파일은 이 링크의 비밀번호로 잠겨 있어요. 서버는 비밀번호를 모르기 때문에, 파일을 다시 올리거나 받아 보려면 한 번 넣어야 해요."
+      >
+        <form onSubmit={doUnlock} className="mt-4 space-y-3">
+          <Input type="password" autoFocus autoComplete="off" value={unlockPw} onChange={(e) => setUnlockPw(e.target.value)} placeholder="링크 비밀번호" className="h-11" />
+          {unlockErr && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{unlockErr}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setUnlock(null)}>
+              취소
+            </Button>
+            <Button type="submit" variant="brand" disabled={!unlockPw || unlocking}>
+              {unlocking ? "확인 중…" : "확인"}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
       <QrViewer url={share.url} title={share.title} message={share.message} expiresAt={share.expiresAt} open={qrOpen} onClose={closeQr} />
     </Card>
   );

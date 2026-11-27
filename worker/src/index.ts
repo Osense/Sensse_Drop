@@ -8,6 +8,7 @@
 import { ALLOWED_EXT, isHangul } from "./file-types";
 import { checkAccess, hashPassword, randomCode, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
 import { getDb, getUserId, HISTORY_DAYS, isDevMode, type Db } from "./db";
+import { encOf, encSize, isB64u, MAGIC, parseKdf, pepperOf, pepperVersion, type EncMeta } from "./e2e";
 import type { CollectSettings, Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
 import { EXPIRE_OPTIONS, MIN_CUSTOM_MINUTES, MULTIPART_THRESHOLD, PART_SIZE, PLANS, PRO_GRACE_DAYS, type Plan, type PlanId } from "./plans";
 
@@ -138,13 +139,14 @@ function computeStatus(share: ShareRow, f: FileRow): FileRow["status"] {
 
 /** 받는 사람에게 보여 줄 목록 */
 function downloadItems(share: ShareWithFiles) {
-  const items: { fileId: string; kind: "pdf" | "original"; name: string; status: string; size: number | null }[] = [];
+  const items: { fileId: string; kind: "pdf" | "original"; name: string; nameEnc: string | null; status: string; size: number | null }[] = [];
   for (const f of share.files) {
     if (needsPdf(share, f)) {
       items.push({
         fileId: f.id,
         kind: "pdf",
         name: `${baseName(f.original_name)}.pdf`,
+        nameEnc: f.name_enc ?? null,
         status: f.pdf_size != null ? "done" : f.status === "error" ? "error" : "converting",
         size: f.pdf_size,
       });
@@ -154,6 +156,7 @@ function downloadItems(share: ShareWithFiles) {
         fileId: f.id,
         kind: "original",
         name: f.original_name,
+        nameEnc: f.name_enc ?? null,
         status: f.original_uploaded ? "done" : "uploading",
         size: f.size,
       });
@@ -183,6 +186,7 @@ function summarize(env: Env, request: Request, s: ShareWithFiles): ShareSummary 
     purged: Boolean(s.purged_at),
     forgetAt: s.purged_at ? new Date(Date.parse(s.purged_at) + HISTORY_DAYS * 86400000).toISOString() : null,
     member: Boolean(s.owner_id),
+    encrypted: Boolean(encOf(s)),
     opens: s.open_count ?? 0,
     downloads: files.reduce((n, f) => n + f.downloads, 0),
     bytes: state === "open" && !s.purged_at ? s.files.reduce((n, f) => n + storedBytes(s, f), 0) : 0,
@@ -406,7 +410,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const body = (await request.json().catch(() => null)) as {
       title?: string;
       message?: string;
-      password?: string;
+      /** 비밀번호에서 브라우저가 만든 확인용 값 (비밀번호 자체는 오지 않아요) */
+      authKey?: string;
+      /** 비밀번호 → 열쇠 만들 때 쓴 salt · 반복 횟수 */
+      kdf?: { iter?: number; salt?: string };
       output?: Output;
       expireMinutes?: number;
       /** 마감 시각 직접 지정 (ISO) */
@@ -440,8 +447,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
         return fail(400, `${plan.name}은 열려 있는 링크의 파일을 합쳐 ${sizeLabel(plan.quotaMb)}까지 둘 수 있어요. 지금 ${Math.floor(left / MB)}MB 남았어요. 배포 기록에서 다 쓴 링크를 닫으면 자리가 생겨요.`);
       }
     }
-    const password = String(body.password ?? "");
-    if (password.length < 4 || password.length > 64) return fail(400, "비밀번호는 4~64자로 정해 주세요.");
+    // 종단간 암호화: 비밀번호 대신 확인용 값만 받아요. 예전 화면(평문 비밀번호)은 새로고침하도록
+    const kdf = parseKdf(body.kdf);
+    if (!kdf || !isB64u(body.authKey, 43, 43)) return fail(400, "쎈스드롭이 새 버전으로 바뀌었어요. 페이지를 새로고침한 뒤 다시 해 주세요.");
+    const enc: EncMeta = { v: 1, iter: kdf.iter, salt: kdf.salt, wrap: null, pv: pepperVersion(env) };
     const output: Output = OUTPUTS.has(body.output as Output) ? (body.output as Output) : "pdf";
 
     const expiresAt = resolveExpiry(body, plan, proUntil);
@@ -457,17 +466,19 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       title: String(body.title ?? "").trim().slice(0, TITLE_MAX) || "배포 자료",
       message: String(body.message ?? "").replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000),
       output,
-      password_hash: await hashPassword(password),
+      password_hash: await hashPassword(body.authKey as string),
       admin_token_hash: await sha256(adminToken),
       created_at: now.toISOString(),
       expires_at: expiresAt.toISOString(),
       plan: plan.id,
+      enc,
     };
     const rows: FileRow[] = files.map((f, i) => ({
       id: randomId(8),
       share_id: id,
       position: i,
-      original_name: cleanName(f.name),
+      // 진짜 이름은 브라우저에서 잠가 /key 로 따로 받아요. 여기에는 자리 표시만
+      original_name: `파일 ${i + 1}.${extOf(String(f.name))}`,
       ext: extOf(String(f.name)) as FileRow["ext"],
       size: Number(f.size),
       status: "uploading",
@@ -476,7 +487,30 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       original_uploaded: false,
     }));
     await db.createShare(share, rows);
-    return json({ id, adminToken, url: `${baseUrl(env, request)}/${id}`, files: rows.map((r) => ({ id: r.id, name: r.original_name })) }, 201);
+    return json(
+      { id, adminToken, url: `${baseUrl(env, request)}/${id}`, pepper: await pepperOf(env, id, enc.pv), files: rows.map((r) => ({ id: r.id, name: r.original_name })) },
+      201,
+    );
+  }
+
+  // ---------- 잠근 링크 열쇠 · 파일 이름 받기 (만든 직후 한 번) ----------
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/key$/.exec(path)) && method === "POST") {
+    const share = await requireManager(env, db, request, m[1]);
+    if (share instanceof Response) return share;
+    const enc = encOf(share);
+    if (!enc) return fail(400, "암호화 링크가 아니에요.");
+    if (enc.wrap) return fail(409, "이미 열쇠가 있어요.");
+    const body = (await request.json().catch(() => null)) as { wrap?: string; names?: { id?: string; enc?: string }[] } | null;
+    // iv 12 + 열쇠 32 + 태그 16 = 60바이트 → 80글자
+    if (!isB64u(body?.wrap, 80, 80)) return fail(400, "열쇠 형식이 올바르지 않아요.");
+    const names = Array.isArray(body?.names) ? body!.names : [];
+    for (const n of names) {
+      const file = share.files.find((f) => f.id === n?.id);
+      if (!file || !isB64u(n.enc, 38, 1200)) return fail(400, "파일 이름 형식이 올바르지 않아요.");
+    }
+    for (const n of names) await db.updateFile(share.id, n.id!, { name_enc: n.enc! });
+    await db.updateShare(share.id, { enc: { ...enc, wrap: body!.wrap! } });
+    return json({ ok: true });
   }
 
   // ---------- 수합 링크 만들기 (교사) ----------
@@ -579,7 +613,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (!obj) return fail(404, "아직 올라오지 않은 파일이에요.");
     return new Response(obj.body, {
       headers: {
-        "Content-Type": kind === "pdf" ? "application/pdf" : "application/octet-stream",
+        "Content-Type": kind === "pdf" && !encOf(share) ? "application/pdf" : "application/octet-stream",
         "Content-Length": String(obj.size),
         "Content-Disposition": contentDisposition(kind === "pdf" ? `${baseName(file.original_name)}.pdf` : file.original_name),
         "Cache-Control": "private, no-store",
@@ -622,12 +656,15 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       createdAt: share.created_at,
       expiresAt: share.expires_at,
       url: `${baseUrl(env, request)}/${share.id}`,
+      // 비밀번호를 아는 주인만 풀 수 있어요 (pepper 만으로는 못 풀어요)
+      enc: encOf(share) ? { iter: share.enc!.iter, salt: share.enc!.salt, wrap: share.enc!.wrap ?? null, pepper: await pepperOf(env, share.id, share.enc!.pv) } : null,
       kind: share.kind === "collect" ? "collect" : "share",
       collect: share.kind === "collect" ? { ...share.collect, hasPassword: Boolean(share.password_hash) } : null,
       purged: Boolean(share.purged_at),
       files: share.files.map((f) => ({
         id: f.id,
         name: f.original_name,
+        nameEnc: f.name_enc ?? null,
         ext: f.ext,
         size: f.size,
         status: f.status,
@@ -650,11 +687,18 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (kind === "original" && !needsOriginal(share, file)) return fail(400, "이 링크는 원본을 받지 않아요.");
     if (kind === "pdf" && !needsPdf(share, file)) return fail(400, "이 링크는 PDF를 받지 않아요.");
     const plan = planOfShare(share);
+    const enc = encOf(share);
+    if (enc && !enc.wrap) return fail(409, "링크 열쇠가 아직 없어요. 처음부터 다시 만들어 주세요.");
     // 원본(그리고 원래 PDF인 파일)은 처음 알린 크기 그대로, 브라우저에서 만든 PDF는 원본의 몇 배까지
+    // 암호화 링크는 잠근 뒤 크기(encSize)로 셉니다
+    const sized = (n: number) => (enc ? encSize(n) : n);
     const exact = kind === "original" || file.ext === "pdf";
-    const maxBytes = exact ? file.size : Math.max(file.size, 1 * MB) * PDF_SIZE_FACTOR;
+    const fullSize = sized(file.size);
+    const maxBytes = exact ? fullSize : sized(Math.max(file.size, 1 * MB) * PDF_SIZE_FACTOR);
     const objKey = key(share.id, file.id, kind, file.ext);
-    const contentType = kind === "pdf" ? "application/pdf" : "application/octet-stream";
+    const contentType = enc ? "application/octet-stream" : kind === "pdf" ? "application/pdf" : "application/octet-stream";
+    /** 올라온 데이터 첫 바이트 확인: 잠긴 파일은 SDE1, 예전 평문 PDF 는 %PDF- */
+    const magicOk = (head: string) => (enc ? head.startsWith(MAGIC) : kind !== "pdf" || head.startsWith("%PDF-"));
 
     // 한 번에 올리기
     if (!m[3] && method === "PUT") {
@@ -665,27 +709,27 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       const data = await request.arrayBuffer();
       if (data.byteLength === 0) return fail(400, "빈 파일이에요.");
       if (data.byteLength > maxBytes) return fail(413, "처음에 고른 파일보다 커요.");
-      if (exact && data.byteLength !== file.size) return fail(400, "처음에 고른 파일과 크기가 달라요.");
-      if (kind === "pdf" && new TextDecoder().decode(data.slice(0, 5)) !== "%PDF-") return fail(400, "PDF 파일이 아니에요.");
+      if (exact && data.byteLength !== fullSize) return fail(400, "처음에 고른 파일과 크기가 달라요.");
+      if (!magicOk(new TextDecoder().decode(data.slice(0, 5)))) return fail(400, enc ? "잠기지 않은 파일은 올릴 수 없어요." : "PDF 파일이 아니에요.");
       await env.BUCKET.put(objKey, data, { httpMetadata: { contentType } });
       return json({ status: await markUploaded(db, share, file, kind, data.byteLength) });
     }
 
     // 나눠 올리기 (R2 멀티파트). 원본이 MULTIPART_THRESHOLD 보다 큰 파일만
-    if (!exact || file.size <= MULTIPART_THRESHOLD) return fail(400, "이 파일은 한 번에 올려 주세요.");
+    if (!exact || fullSize <= MULTIPART_THRESHOLD) return fail(400, "이 파일은 한 번에 올려 주세요.");
     if (plan.maxFileMb != null && file.size > plan.maxFileMb * MB) return fail(413, "요금제의 파일 크기 한도를 넘었어요.");
     const uploadId = m[4];
     if (!uploadId && method === "POST") {
       const mpu = await env.BUCKET.createMultipartUpload(objKey, { httpMetadata: { contentType } });
-      return json({ uploadId: mpu.uploadId, partSize: PART_SIZE, parts: Math.ceil(file.size / PART_SIZE) });
+      return json({ uploadId: mpu.uploadId, partSize: PART_SIZE, parts: Math.ceil(fullSize / PART_SIZE) });
     }
     if (!uploadId) return fail(405, "지원하지 않는 요청이에요.");
     const mpu = env.BUCKET.resumeMultipartUpload(objKey, uploadId);
     if (m[5] && m[5] !== "complete" && method === "PUT") {
       const n = Number(m[5]);
-      const parts = Math.ceil(file.size / PART_SIZE);
+      const parts = Math.ceil(fullSize / PART_SIZE);
       if (n < 1 || n > parts) return fail(400, "조각 번호가 올바르지 않아요.");
-      const want = n < parts ? PART_SIZE : file.size - PART_SIZE * (parts - 1);
+      const want = n < parts ? PART_SIZE : fullSize - PART_SIZE * (parts - 1);
       const data = await request.arrayBuffer();
       if (data.byteLength !== want) return fail(400, "조각 크기가 올바르지 않아요.");
       try {
@@ -698,22 +742,22 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (m[5] === "complete" && method === "POST") {
       const body = (await request.json().catch(() => ({}))) as { parts?: { partNumber: number; etag: string }[] };
       const parts = (body.parts ?? []).filter((p) => Number.isInteger(p?.partNumber) && typeof p?.etag === "string").sort((x, y) => x.partNumber - y.partNumber);
-      if (parts.length !== Math.ceil(file.size / PART_SIZE)) return fail(400, "아직 다 올라오지 않았어요.");
+      if (parts.length !== Math.ceil(fullSize / PART_SIZE)) return fail(400, "아직 다 올라오지 않았어요.");
       let obj: R2Object;
       try {
         obj = await mpu.complete(parts);
       } catch {
         return fail(409, "조각을 합치지 못했어요. 처음부터 다시 올려 주세요.");
       }
-      if (obj.size !== file.size) {
+      if (obj.size !== fullSize) {
         await env.BUCKET.delete(objKey);
         return fail(400, "처음에 고른 파일과 크기가 달라요.");
       }
-      if (kind === "pdf") {
+      if (enc || kind === "pdf") {
         const head = await env.BUCKET.get(objKey, { range: { offset: 0, length: 5 } });
-        if (!head || (await head.text()) !== "%PDF-") {
+        if (!head || !magicOk(await head.text())) {
           await env.BUCKET.delete(objKey);
-          return fail(400, "PDF 파일이 아니에요.");
+          return fail(400, enc ? "잠기지 않은 파일은 올릴 수 없어요." : "PDF 파일이 아니에요.");
         }
       }
       return json({ status: await markUploaded(db, share, file, kind, obj.size) });
@@ -762,6 +806,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       expiresAt: share.expires_at,
       // 한글을 PDF + 원본으로 보내면 받는 파일은 2개라, 받는 사람이 실제로 받는 개수로 셉니다
       fileCount: downloadItems(share).length,
+      // 비밀번호에서 열쇠를 만들 때 쓰는 값 (비밀이 아니에요)
+      kdf: encOf(share) ? { iter: share.enc!.iter, salt: share.enc!.salt } : null,
       authed: await checkAccess(secretOf(env), share.id, cookies(request)[`sd_${share.id}`]),
     });
   }
@@ -855,12 +901,17 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       const { success } = await env.AUTH_LIMITER.limit({ key: `${ip}:${share.id}` });
       if (!success) return fail(429, "비밀번호를 너무 많이 틀렸어요. 잠시 후 다시 해 주세요.");
     }
-    const body = (await request.json().catch(() => ({}))) as { password?: string };
-    if (!(await verifyPassword(String(body.password ?? ""), share.password_hash))) return fail(401, "비밀번호가 틀렸어요.");
+    const body = (await request.json().catch(() => ({}))) as { password?: string; authKey?: string };
+    const enc = encOf(share);
+    // 암호화 링크는 비밀번호 대신 브라우저가 만든 확인용 값으로 확인해요
+    const proof = enc ? String(body.authKey ?? "") : String(body.password ?? "");
+    if (!(await verifyPassword(proof, share.password_hash))) return fail(401, "비밀번호가 틀렸어요.");
+    if (enc && !enc.wrap) return fail(409, "아직 올리는 중이에요. 잠시 후 다시 해 주세요.");
     await db.countOpen(share.id).catch(() => {});
     const value = await signAccess(secretOf(env), share.id, ACCESS_TTL_MS);
     const secure = url.protocol === "https:" ? "; Secure" : "";
-    return json({ ok: true }, 200, {
+    const keys = enc ? { wrap: enc.wrap, pepper: await pepperOf(env, share.id, enc.pv) } : {};
+    return json({ ok: true, ...keys }, 200, {
       "Set-Cookie": `sd_${share.id}=${value}; Path=/api/s/${share.id}; Max-Age=${ACCESS_TTL_MS / 1000}; HttpOnly; SameSite=Lax${secure}`,
     });
   }
@@ -868,7 +919,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/files$/.exec(path)) && method === "GET") {
     const share = await requireViewer(env, db, request, m[1]);
     if (share instanceof Response) return share;
-    return json({ title: share.title, message: share.message ?? "", expiresAt: share.expires_at, items: downloadItems(share) });
+    return json({ title: share.title, message: share.message ?? "", expiresAt: share.expires_at, encrypted: Boolean(encOf(share)), items: downloadItems(share) });
   }
 
   if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/download\/([A-Za-z0-9]{6,16})\/(pdf|original)$/.exec(path)) && method === "GET") {
@@ -884,7 +935,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     await db.countDownload(share.id, file.id).catch(() => {});
     return new Response(obj.body, {
       headers: {
-        "Content-Type": kind === "pdf" ? "application/pdf" : "application/octet-stream",
+        "Content-Type": kind === "pdf" && !encOf(share) ? "application/pdf" : "application/octet-stream",
         "Content-Length": String(obj.size),
         "Content-Disposition": contentDisposition(item.name),
         "Cache-Control": "private, no-store",
