@@ -1,5 +1,5 @@
-import { HostView } from "@/components/host-view";
+import { HomeView } from "@/components/home-view";
 
 export default function Page() {
-  return <HostView />;
+  return <HomeView />;
 }

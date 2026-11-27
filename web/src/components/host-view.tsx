@@ -2,13 +2,13 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Eye, EyeOff, FileUp, Inbox, Lock, Plus, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Eye, EyeOff, FileUp, Lock, Plus, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Wizard, type WizardStep } from "@/components/wizard";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
 import { StatusPill } from "@/components/status-pill";
 import { Wordmark } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -38,7 +38,7 @@ const OUTPUTS = [
 type Picked = { key: string; file: File; label: string; status: "waiting" | "uploading" | "converting" | "done" | "error"; error?: string; note?: string };
 type Created = { id: string; adminToken: string; password: string };
 
-export function HostView() {
+export function HostView({ onHome }: { onHome?: () => void } = {}) {
   const auth = useAuth();
   const { config, plan: limits, me, refresh: refreshPlan } = usePlan();
   const guest = limits.id === "guest";
@@ -61,6 +61,7 @@ export function HostView() {
   const [busy, setBusy] = React.useState(false);
   const [over, setOver] = React.useState(false);
   const [created, setCreated] = React.useState<Created | null>(null);
+  const [step, setStep] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   function addFiles(list: FileList | File[]) {
@@ -194,6 +195,7 @@ export function HostView() {
 
   function reset() {
     setCreated(null);
+    setStep(0);
     setFiles([]);
     setTitle("");
     setMessage("");
@@ -220,41 +222,14 @@ export function HostView() {
     );
   }
 
-  return (
-    <div className="relative">
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-80" />
-      <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-        <div className="mb-7 animate-fade-up">
-          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-            한글 파일 올리고, <span className="text-gradient">링크 하나로</span>
-          </h1>
-          <p className="mt-2 text-muted-foreground">
-            한글(HWP · HWPX)은 보이는 그대로 PDF로 바꾸고, 이미지 · 오피스 문서 등 다른 파일은 그대로, 비밀번호 걸린 링크 하나로 나눠 줘요.
-          </p>
-          <Link href="/collect/" className="mt-3 inline-flex items-center gap-1.5 rounded-full border bg-background px-3 py-1.5 text-sm font-medium transition-colors hover:border-brand/50 hover:text-brand">
-            <Inbox className="size-4 text-brand" /> 학생에게 과제를 걷어야 하나요? <b>수합 링크 만들기</b> →
-          </Link>
-        </div>
-
-        {me?.lapse && <LapseBanner lapse={me.lapse} />}
-
-        <form onSubmit={(e) => submit(e)} className="space-y-4" autoComplete="off">
-          <Card className="p-5 sm:p-6">
-            <Step n={1} title="자동 삭제 시간" />
-            <ExpirePicker
-              options={config.expireOptions}
-              plan={limits}
-              value={expire}
-              customAt={customAt}
-              onChange={setPicked}
-              onCustomAt={setCustomAt}
-              minCustomMinutes={config.minCustomMinutes}
-              disabled={busy}
-            />
-          </Card>
-
-          <Card className="p-5 sm:p-6">
-            <Step n={2} title="파일 올리기" />
+  const hasHangul = files.some((p) => isHangul(extOf(p.file.name)));
+  const steps: WizardStep[] = [
+    {
+      title: "파일 올리기",
+      hint: "나눠 줄 파일을 골라 주세요. 한글(HWP · HWPX)은 보이는 그대로 PDF로 바꿔 줘요.",
+      check: () => (files.length === 0 ? "파일을 한 개 이상 올려 주세요." : null),
+      content: (
+        <>
             <div
               role="button"
               tabIndex={0}
@@ -360,10 +335,16 @@ export function HostView() {
                 </Link>
               </div>
             )}
-          </Card>
-
-          <Card className="p-5 sm:p-6">
-            <Step n={3} title="한글 파일 보내는 방식" />
+        </>
+      ),
+    },
+    ...(hasHangul
+      ? [
+          {
+            title: "보내는 방식",
+            hint: "한글 파일을 어떻게 보낼까요?",
+            content: (
+              <>
             <div className="grid gap-2 sm:grid-cols-3">
               {OUTPUTS.map((o) => (
                 <RadioCard key={o.value} name="output" value={o.value} checked={output === o.value} onSelect={setOutput}>
@@ -375,10 +356,35 @@ export function HostView() {
               ))}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">PDF · 이미지 · 오피스 문서 등 다른 파일은 고른 방식과 상관없이 그대로 보내요.</p>
-          </Card>
-
-          <Card className="space-y-4 p-5 sm:p-6">
-            <Step n={4} title="링크 설정" />
+              </>
+            ),
+          },
+        ]
+      : []),
+    {
+      title: "자동 삭제",
+      hint: "정한 시간이 지나면 링크가 닫히고 파일이 지워져요.",
+      content: (
+        <>
+            <ExpirePicker
+              options={config.expireOptions}
+              plan={limits}
+              value={expire}
+              customAt={customAt}
+              onChange={setPicked}
+              onCustomAt={setCustomAt}
+              minCustomMinutes={config.minCustomMinutes}
+              disabled={busy}
+            />
+        </>
+      ),
+    },
+    {
+      title: "링크 설정",
+      hint: "받는 사람에게 보일 제목과 비밀번호를 정해 주세요.",
+      check: () => (password.length < 4 ? "받는 사람 비밀번호를 4자 이상으로 정해 주세요." : null),
+      content: (
+        <div className="space-y-4">
             <div className="space-y-1.5">
               <div className="flex items-baseline justify-between">
                 <Label htmlFor="title">제목</Label>
@@ -430,12 +436,47 @@ export function HostView() {
               </div>
               <p className="text-xs text-muted-foreground">링크를 받은 사람이 이 비밀번호를 넣어야 파일 목록이 보여요.</p>
             </div>
-            <Button type="submit" variant="brand" size="lg" className="w-full" disabled={busy}>
-              {busy ? "바꾸고 올리는 중… 창을 닫지 마세요" : "공유 링크 만들기"}
-            </Button>
-            {notice && <p className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm text-destructive">{notice}</p>}
-          </Card>
-        </form>
+          {busy && (
+            <ul className="space-y-1.5 rounded-xl border bg-muted/30 p-3">
+              {files.map((p) => (
+                <li key={p.key} className="flex items-center gap-2 text-sm">
+                  <FileBadge ext={extOf(p.file.name)} />
+                  <span className="min-w-0 flex-1 truncate">{p.label}</span>
+                  {p.note && <span className="text-xs tabular-nums text-muted-foreground">{p.note}</span>}
+                  <StatusPill status={p.status} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ),
+    },
+  ];
+  const at = Math.min(step, steps.length - 1);
+
+  return (
+    <div className="relative">
+      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-80" />
+      <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
+        <div className="mb-6 animate-fade-up">
+          <p className="text-sm font-semibold text-brand">파일 배포하기</p>
+          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
+            파일 올리고, <span className="text-gradient">링크 하나로</span>
+          </h1>
+        </div>
+
+        {me?.lapse && <LapseBanner lapse={me.lapse} />}
+
+        <Wizard
+          steps={steps}
+          step={at}
+          onStep={setStep}
+          busy={busy}
+          notice={notice}
+          onBack={onHome}
+          onFinish={() => submit(null)}
+          finishLabel={busy ? "바꾸고 올리는 중… 창을 닫지 마세요" : "공유 링크 만들기"}
+        />
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
           <Wordmark /> · {limits.name} · 올린 파일은 정한 시간이 지나면 지워져요 ·{" "}
@@ -484,14 +525,5 @@ export function LapseBanner({ lapse }: { lapse: { proUntil: string; closesAt: st
         </Link>
       </p>
     </div>
-  );
-}
-
-function Step({ n, title }: { n: number; title: string }) {
-  return (
-    <h2 className="mb-3 flex items-center gap-2 font-semibold">
-      <span className="grid size-6 place-items-center rounded-full bg-brand/10 text-xs font-bold text-brand">{n}</span>
-      {title}
-    </h2>
   );
 }
