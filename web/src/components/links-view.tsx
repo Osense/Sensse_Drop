@@ -2,14 +2,14 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Check, ChevronLeft, Copy, Download, Eye, FolderOpen, HardDrive, Inbox, Link2, Lock, Plus, QrCode, Trash2, TriangleAlert } from "lucide-react";
+import { Check, ChevronLeft, Copy, Download, Eye, FolderOpen, HardDrive, Inbox, Link2, Loader2, Lock, Plus, QrCode, Trash2, TriangleAlert } from "lucide-react";
 import { CollectManager } from "@/components/collect-manager";
 import { Countdown } from "@/components/countdown";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { api, localLinks, type ShareSummary } from "@/lib/api";
+import { api, downloadOwnFile, localLinks, type ShareSummary } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { STATIC_ONLY } from "@/lib/config";
 import { formatDate, formatSize } from "@/lib/format";
@@ -96,6 +96,19 @@ export function LinksView() {
     }
     localLinks.remove(r.id);
     load();
+  }
+
+  const [getting, setGetting] = React.useState<string | null>(null);
+  /** 내가 보낸 파일 받아 보기 (무엇을 보냈는지 확인) */
+  async function getOwn(shareId: string, f: ShareSummary["files"][number]) {
+    setGetting(f.id);
+    try {
+      await downloadOwnFile(`/api/shares/${shareId}/files/${f.id}/download`, await headersFor(shareId)(), f.name);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setGetting(null);
+    }
   }
 
   async function copy(r: ShareSummary) {
@@ -265,17 +278,38 @@ export function LinksView() {
                     {r.message && <p className="mt-3 line-clamp-2 whitespace-pre-line rounded-lg bg-brand/5 px-3 py-2 text-sm text-foreground/80">{r.message}</p>}
 
                     <ul className={cn("mt-3 flex flex-wrap gap-1.5", r.kind === "collect" && "hidden")}>
-                      {r.files.map((f) => (
-                        <li key={f.id} className="flex max-w-full items-center gap-2 rounded-lg border bg-background px-2 py-1">
-                          <FileBadge ext={f.ext} className="h-5 min-w-9 text-[9px]" />
-                          <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={f.name}>
-                            {f.name}
-                          </span>
-                          <span className="text-[11px] tabular-nums text-muted-foreground">
-                            {formatSize(f.size)} · <Download className="inline size-3 align-[-2px]" /> {f.downloads}
-                          </span>
-                        </li>
-                      ))}
+                      {r.files.map((f) => {
+                        const inner = (
+                          <>
+                            <FileBadge ext={f.ext} className="h-5 min-w-9 text-[9px]" />
+                            <span className={cn("max-w-48 truncate text-xs font-medium", r.purged && "text-muted-foreground line-through decoration-muted-foreground/50")} title={f.name}>
+                              {f.name}
+                            </span>
+                            <span className="text-[11px] tabular-nums text-muted-foreground">
+                              {formatSize(f.size)} · 받아 감 {f.downloads}
+                            </span>
+                          </>
+                        );
+                        const can = !r.purged && r.state === "open";
+                        return (
+                          <li key={f.id} className="max-w-full">
+                            {can ? (
+                              <button
+                                type="button"
+                                title="내가 보낸 파일 받아 보기"
+                                disabled={getting === f.id}
+                                onClick={() => getOwn(r.id, f)}
+                                className="flex max-w-full items-center gap-2 rounded-lg border bg-background px-2 py-1 text-left transition-colors hover:border-brand/50 hover:bg-brand/5"
+                              >
+                                {inner}
+                                {getting === f.id ? <Loader2 className="size-3.5 animate-spin text-brand" /> : <Download className="size-3.5 text-brand" />}
+                              </button>
+                            ) : (
+                              <span className="flex max-w-full items-center gap-2 rounded-lg border bg-background px-2 py-1">{inner}</span>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
 
                     {r.state !== "open" && (

@@ -147,6 +147,43 @@ export async function apiBlob(url: string, init?: RequestInit): Promise<Blob> {
   return res.blob();
 }
 
+/** 링크 주인이 올린 파일 받아서 저장 (이름은 서버가 정한 이름, 없으면 fallback) */
+export async function downloadOwnFile(url: string, headers: Record<string, string>, fallback: string) {
+  let blob: Blob;
+  let name = fallback;
+  if (STATIC_ONLY) {
+    const r = await (await import("./mock-api")).mockFile(url, { headers });
+    blob = r.blob;
+    name = r.name;
+  } else {
+    let res: Response;
+    try {
+      res = await fetch(url, { credentials: "same-origin", headers });
+    } catch {
+      throw new ApiError("서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.", 0);
+    }
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new ApiError(data?.error || `받지 못했어요 (${res.status})`, res.status);
+    }
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (m) {
+      try {
+        name = decodeURIComponent(m[1]);
+      } catch {}
+    }
+    blob = await res.blob();
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
 /** 수합 링크에 이 기기에서 낸 제출 (취소 · 확인용 토큰) */
 export type LocalSubmission = { token: string; name: string; at: string };
 const SUB_KEY = (id: string) => `sensedrop.submit.${id}`;
