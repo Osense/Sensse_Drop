@@ -8,8 +8,8 @@
 import { ALLOWED_EXT, isHangul } from "./file-types";
 import { checkAccess, hashPassword, randomCode, randomId, randomToken, safeEqual, sha256, signAccess, verifyPassword } from "./crypto";
 import { getDb, getUserId, HISTORY_DAYS, isDevMode, type Db } from "./db";
-import type { Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
 import { encOf, encSize, isB64u, MAGIC, parseKdf, pepperOf, pepperVersion, type EncMeta } from "./e2e";
+import type { CollectSettings, Env, FileRow, Output, ShareRow, ShareSummary, ShareWithFiles } from "./types";
 import { EXPIRE_OPTIONS, MIN_CUSTOM_MINUTES, MULTIPART_THRESHOLD, PART_SIZE, PLANS, PRO_GRACE_DAYS, type Plan, type PlanId } from "./plans";
 
 const ACCESS_TTL_MS = 12 * 60 * 60 * 1000;
@@ -190,6 +190,8 @@ function summarize(env: Env, request: Request, s: ShareWithFiles): ShareSummary 
     downloads: files.reduce((n, f) => n + f.downloads, 0),
     bytes: state === "open" && !s.purged_at ? s.files.reduce((n, f) => n + storedBytes(s, f), 0) : 0,
     files,
+    kind: s.kind === "collect" ? "collect" : "share",
+    submitters: s.kind === "collect" ? new Set(s.files.map((f) => f.submitter ?? "")).size : 0,
   };
 }
 
@@ -239,7 +241,8 @@ async function requireManager(env: Env, db: Db, request: Request, id: string): P
 
 async function requireViewer(env: Env, db: Db, request: Request, id: string): Promise<ShareWithFiles | Response> {
   const share = await db.getShare(id);
-  if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
+  // 수합 링크의 파일은 교사만 받습니다 (학생끼리 서로의 과제를 볼 수 없게)
+  if (!share || isExpired(share) || share.kind === "collect") return fail(404, "링크가 없거나 보관 기간이 지났어요.");
   if (!(await checkAccess(secretOf(env), share.id, cookies(request)[`sd_${share.id}`]))) {
     return fail(401, "비밀번호를 넣어 주세요.");
   }
@@ -253,6 +256,107 @@ async function removeShareFiles(env: Env, shareId: string) {
     if (list.objects.length) await env.BUCKET.delete(list.objects.map((o) => o.key));
     cursor = list.truncated ? list.cursor : undefined;
   } while (cursor);
+}
+
+/** 수합 링크 한 개에 모을 수 있는 파일 수 (교사 화면 · 정리 작업이 한 번에 다룰 수 있게) */
+const COLLECT_MAX_FILES = 600;
+/** 나그네(로그인 없이)가 만든 수합 링크 하나에 모을 수 있는 용량(MB) */
+const COLLECT_GUEST_MB = 200;
+const ROSTER_MAX = 300;
+
+/** 사람 이름: 공백 정리, 파일 이름 · 폴더 이름에 못 쓰는 글자는 빼고 30자까지 */
+function cleanPerson(name: unknown) {
+  return String(name ?? "")
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 30);
+}
+
+function cleanText(text: unknown, max: number, multiline = false) {
+  let t = String(text ?? "").replace(/\r\n?/g, "\n");
+  t = multiline ? t.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "") : t.replace(/[\u0000-\u001f\u007f]/g, " ");
+  return t.trim().slice(0, max);
+}
+
+/** 수합 링크가 지금 제출을 받는지 */
+function collectOpen(share: ShareRow) {
+  const c = share.collect;
+  if (!c || isExpired(share) || c.closedAt) return false;
+  return !c.deadline || Date.parse(c.deadline) > Date.now();
+}
+
+/** 학생 화면에 보일 수합 링크 정보 (명단 · 낸 파일은 보이지 않음) */
+function collectInfo(share: ShareRow) {
+  const c = share.collect!;
+  const plan = planOfShare(share);
+  return {
+    kind: "collect" as const,
+    title: share.title,
+    message: share.message ?? "",
+    expiresAt: share.expires_at,
+    deadline: c.deadline && Date.parse(c.deadline) < Date.parse(share.expires_at) ? c.deadline : share.expires_at,
+    open: collectOpen(share),
+    needsPassword: Boolean(share.password_hash),
+    perPerson: c.perPerson,
+    nameLabel: c.nameLabel || "이름",
+    maxFileMb: plan.maxFileMb,
+  };
+}
+
+async function newCode(db: Db) {
+  // 직접 칠 수 있게 짧은 코드. 겹치면 다시 뽑기 (32^6 ≈ 10억 가지)
+  let id = randomCode();
+  for (let i = 0; i < 5 && (await db.getShare(id)); i++) id = randomCode();
+  return id;
+}
+
+/** 마감: 요금제가 고를 수 있는 삭제 시간, 또는 최대 기간 안에서 직접 정한 시각 */
+function resolveExpiry(
+  body: { expireMinutes?: number; expiresAt?: string; acceptBeyondPlan?: boolean },
+  plan: Plan,
+  proUntil: string | null,
+): Date | Response {
+  const now = Date.now();
+  let expiresAt: Date;
+  if (body.expiresAt != null) {
+    if (!plan.maxCustomMinutes) return fail(400, "마감 시각 직접 지정은 로그인하면 쓸 수 있어요.");
+    const t = Date.parse(String(body.expiresAt));
+    if (!Number.isFinite(t)) return fail(400, "마감 시각이 올바르지 않아요.");
+    if (t < now + (MIN_CUSTOM_MINUTES - 1) * 60000) return fail(400, `마감 시각은 지금부터 ${MIN_CUSTOM_MINUTES}분 뒤부터 정할 수 있어요.`);
+    if (t > now + plan.maxCustomMinutes * 60000 + 60000) {
+      return fail(400, `${plan.name}은 마감을 ${plan.id === "pro" ? "1년" : `${plan.maxCustomMinutes / 1440}일`} 안에서 정할 수 있어요.`);
+    }
+    expiresAt = new Date(t);
+  } else {
+    const asked = Math.floor(Number(body.expireMinutes));
+    const minutes = Number.isFinite(asked) ? asked : plan.defaultExpire;
+    if (!plan.expireMinutes.includes(minutes)) {
+      if (plan.id === "guest") return fail(400, "나그네는 10분 후 삭제만 쓸 수 있어요. 로그인하면 더 길게 고를 수 있어요.");
+      if (EXPIRE_OPTIONS.some((o) => o.minutes === minutes)) return fail(400, "이 보관 기간은 프로에서 쓸 수 있어요.");
+      return fail(400, "삭제 시간이 올바르지 않아요.");
+    }
+    expiresAt = new Date(now + minutes * 60000);
+  }
+  if (plan.id === "pro" && proUntil && expiresAt.getTime() > Date.parse(proUntil) && !body.acceptBeyondPlan) {
+    return json({ error: "프로 구독 기간 이후까지 열리는 링크예요. 확인이 필요해요.", code: "beyond_plan", proUntil }, 409);
+  }
+  return expiresAt;
+}
+
+/** 파일 올리기 권한: 링크 관리자, 또는 수합 링크에서 그 파일을 낸 사람(X-Submit-Token) */
+async function requireUploader(env: Env, db: Db, request: Request, id: string, fileId: string): Promise<ShareWithFiles | Response> {
+  const token = request.headers.get("X-Submit-Token");
+  if (!token) return requireManager(env, db, request, id);
+  const share = await db.getShare(id);
+  const file = share?.kind === "collect" ? share.files.find((f) => f.id === fileId) : undefined;
+  if (share && file?.submit_token_hash && safeEqual(await sha256(token), file.submit_token_hash)) return share;
+  return fail(404, "파일을 찾을 수 없어요.");
+}
+
+async function removeFileObjects(env: Env, share: ShareRow, f: FileRow) {
+  await env.BUCKET.delete([key(share.id, f.id, "pdf", f.ext), key(share.id, f.id, "original", f.ext)]);
 }
 
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
@@ -348,39 +452,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const enc: EncMeta = { v: 1, iter: kdf.iter, salt: kdf.salt, wrap: null, pv: pepperVersion(env) };
     const output: Output = OUTPUTS.has(body.output as Output) ? (body.output as Output) : "pdf";
 
-    // 마감: 요금제가 고를 수 있는 삭제 시간, 또는 최대 기간 안에서 직접 정한 시각
-    const now = new Date();
-    let expiresAt: Date;
-    if (body.expiresAt != null) {
-      if (!plan.maxCustomMinutes) return fail(400, "마감 시각 직접 지정은 로그인하면 쓸 수 있어요.");
-      const t = Date.parse(String(body.expiresAt));
-      if (!Number.isFinite(t)) return fail(400, "마감 시각이 올바르지 않아요.");
-      if (t < now.getTime() + (MIN_CUSTOM_MINUTES - 1) * 60000) return fail(400, `마감 시각은 지금부터 ${MIN_CUSTOM_MINUTES}분 뒤부터 정할 수 있어요.`);
-      if (t > now.getTime() + plan.maxCustomMinutes * 60000 + 60000) {
-        return fail(400, `${plan.name}은 마감을 ${plan.id === "pro" ? "1년" : `${plan.maxCustomMinutes / 1440}일`} 안에서 정할 수 있어요.`);
-      }
-      expiresAt = new Date(t);
-    } else {
-      const asked = Math.floor(Number(body.expireMinutes));
-      const minutes = Number.isFinite(asked) ? asked : plan.defaultExpire;
-      if (!plan.expireMinutes.includes(minutes)) {
-        if (plan.id === "guest") return fail(400, "나그네는 10분 후 삭제만 쓸 수 있어요. 로그인하면 더 길게 고를 수 있어요.");
-        if (EXPIRE_OPTIONS.some((o) => o.minutes === minutes)) return fail(400, "이 보관 기간은 프로에서 쓸 수 있어요.");
-        return fail(400, "삭제 시간이 올바르지 않아요.");
-      }
-      expiresAt = new Date(now.getTime() + minutes * 60000);
-    }
-    if (plan.id === "pro" && proUntil && expiresAt.getTime() > Date.parse(proUntil) && !body.acceptBeyondPlan) {
-      return json(
-        { error: "프로 구독 기간 이후까지 열리는 링크예요. 확인이 필요해요.", code: "beyond_plan", proUntil },
-        409,
-      );
-    }
+    const expiresAt = resolveExpiry(body, plan, proUntil);
+    if (expiresAt instanceof Response) return expiresAt;
 
     // 직접 칠 수 있게 짧은 코드. 겹치면 다시 뽑기 (32^6 ≈ 10억 가지)
-    let id = randomCode();
-    for (let i = 0; i < 5 && (await db.getShare(id)); i++) id = randomCode();
+    const id = await newCode(db);
     const adminToken = randomToken();
+    const now = new Date();
     const share: ShareRow = {
       id,
       owner_id: userId,
@@ -434,6 +512,115 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ ok: true });
   }
 
+  // ---------- 수합 링크 만들기 (교사) ----------
+  if (path === "/api/collects" && method === "POST") {
+    const userId = await getUserId(env, request);
+    const { plan, proUntil } = await planOf(db, userId);
+    const body = (await request.json().catch(() => null)) as {
+      title?: string;
+      message?: string;
+      password?: string;
+      expireMinutes?: number;
+      expiresAt?: string;
+      acceptBeyondPlan?: boolean;
+      perPerson?: number;
+      nameLabel?: string;
+      roster?: string[];
+      deadline?: string | null;
+    } | null;
+    if (!body) return fail(400, "요청 형식이 올바르지 않아요.");
+    const password = String(body.password ?? "");
+    if (password && (password.length < 4 || password.length > 64)) return fail(400, "제출 비밀번호는 4~64자로 정하거나 비워 두세요.");
+    const expiresAt = resolveExpiry(body, plan, proUntil);
+    if (expiresAt instanceof Response) return expiresAt;
+    let deadline: string | null = null;
+    if (body.deadline) {
+      const t = Date.parse(String(body.deadline));
+      if (!Number.isFinite(t)) return fail(400, "제출 마감 시각이 올바르지 않아요.");
+      if (t <= Date.now()) return fail(400, "제출 마감은 지금보다 뒤로 정해 주세요.");
+      if (t > expiresAt.getTime()) return fail(400, "제출 마감은 파일이 지워지는 시각보다 앞이어야 해요.");
+      deadline = new Date(t).toISOString();
+    }
+    const perPerson = Math.min(plan.maxFiles, Math.max(1, Math.floor(Number(body.perPerson) || Math.min(3, plan.maxFiles))));
+    const collect: CollectSettings = {
+      perPerson,
+      nameLabel: cleanText(body.nameLabel, 20) || "이름",
+      roster: [...new Set((Array.isArray(body.roster) ? body.roster : []).map((n) => cleanPerson(n)).filter(Boolean))].slice(0, ROSTER_MAX),
+      deadline,
+      closedAt: null,
+    };
+    const id = await newCode(db);
+    const adminToken = randomToken();
+    const share: ShareRow = {
+      id,
+      owner_id: userId,
+      title: String(body.title ?? "").trim().slice(0, TITLE_MAX) || "과제 제출",
+      message: cleanText(body.message, 1000, true),
+      output: "original",
+      password_hash: password ? await hashPassword(password) : "",
+      admin_token_hash: await sha256(adminToken),
+      created_at: new Date().toISOString(),
+      expires_at: expiresAt.toISOString(),
+      plan: plan.id,
+      kind: "collect",
+      collect,
+    };
+    await db.createShare(share, []);
+    return json({ id, adminToken, url: `${baseUrl(env, request)}/${id}` }, 201);
+  }
+
+  // 수합: 제출 마감 · 다시 받기 (교사)
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/collect$/.exec(path)) && method === "POST") {
+    const share = await requireManager(env, db, request, m[1]);
+    if (share instanceof Response) return share;
+    if (share.kind !== "collect" || !share.collect) return fail(400, "수합 링크가 아니에요.");
+    if (isExpired(share)) return fail(410, "닫힌 링크예요.");
+    const body = (await request.json().catch(() => ({}))) as { closed?: boolean; roster?: string[] };
+    const next: CollectSettings = { ...share.collect };
+    if (typeof body.closed === "boolean") {
+      next.closedAt = body.closed ? new Date().toISOString() : null;
+      // 다시 받으면 지난 마감 시각은 지움
+      if (!body.closed && next.deadline && Date.parse(next.deadline) < Date.now()) next.deadline = null;
+    }
+    if (Array.isArray(body.roster)) next.roster = [...new Set(body.roster.map((n) => cleanPerson(n)).filter(Boolean))].slice(0, ROSTER_MAX);
+    await db.updateShare(share.id, { collect: next });
+    return json({ collect: next });
+  }
+
+  // 수합: 교사가 낸 파일 하나 지우기
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/files\/([A-Za-z0-9]{6,16})$/.exec(path)) && method === "DELETE") {
+    const share = await requireManager(env, db, request, m[1]);
+    if (share instanceof Response) return share;
+    if (share.kind !== "collect") return fail(400, "수합 링크에서만 파일을 지울 수 있어요.");
+    const file = share.files.find((f) => f.id === m![2]);
+    if (!file) return fail(404, "파일을 찾을 수 없어요.");
+    await removeFileObjects(env, share, file);
+    await db.deleteFiles(share.id, [file.id]);
+    return json({ ok: true });
+  }
+
+  // 링크 주인이 올라온 파일 내려받기 (수합 링크에서 교사가 받을 때)
+  if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/files\/([A-Za-z0-9]{6,16})\/download$/.exec(path)) && method === "GET") {
+    const share = await requireManager(env, db, request, m[1]);
+    if (share instanceof Response) return share;
+    if (share.purged_at) return fail(410, "파일이 이미 지워졌어요.");
+    const file = share.files.find((f) => f.id === m![2]);
+    if (!file) return fail(404, "파일을 찾을 수 없어요.");
+    const asked = url.searchParams.get("kind");
+    const kind: "pdf" | "original" = asked === "pdf" || asked === "original" ? asked : needsOriginal(share, file) ? "original" : "pdf";
+    const obj = await env.BUCKET.get(key(share.id, file.id, kind, file.ext));
+    if (!obj) return fail(404, "아직 올라오지 않은 파일이에요.");
+    return new Response(obj.body, {
+      headers: {
+        "Content-Type": kind === "pdf" ? "application/pdf" : "application/octet-stream",
+        "Content-Length": String(obj.size),
+        "Content-Disposition": contentDisposition(kind === "pdf" ? `${baseName(file.original_name)}.pdf` : file.original_name),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
   // ---------- 내 배포 기록 ----------
   if (path === "/api/me/shares" && method === "GET") {
     const userId = await getUserId(env, request);
@@ -470,6 +657,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       url: `${baseUrl(env, request)}/${share.id}`,
       // 비밀번호를 아는 주인만 풀 수 있어요 (pepper 만으로는 못 풀어요)
       enc: encOf(share) ? { iter: share.enc!.iter, salt: share.enc!.salt, wrap: share.enc!.wrap ?? null, pepper: await pepperOf(env, share.id, share.enc!.pv) } : null,
+      kind: share.kind === "collect" ? "collect" : "share",
+      collect: share.kind === "collect" ? { ...share.collect, hasPassword: Boolean(share.password_hash) } : null,
+      purged: Boolean(share.purged_at),
       files: share.files.map((f) => ({
         id: f.id,
         name: f.original_name,
@@ -479,13 +669,15 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
         status: f.status,
         error: f.error,
         pdfSize: f.pdf_size,
+        submitter: f.submitter ?? null,
+        createdAt: f.created_at ?? null,
       })),
     });
   }
 
   // ---------- 파일 올리기 (작은 파일: 한 번에, 큰 파일: 나눠서) ----------
   if ((m = /^\/api\/shares\/([A-Za-z0-9]{6,16})\/files\/([A-Za-z0-9]{6,16})(\/mpu(?:\/([A-Za-z0-9_.~-]+)(?:\/(\d+|complete))?)?)?$/.exec(path))) {
-    const share = await requireManager(env, db, request, m[1]);
+    const share = await requireUploader(env, db, request, m[1], m[2]);
     if (share instanceof Response) return share;
     if (isExpired(share)) return fail(410, "닫힌 링크예요.");
     const file = share.files.find((f) => f.id === m![2]);
@@ -606,6 +798,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const share = await db.getShare(m[1]);
     if (share?.closed_at) return fail(410, "올린 분이 이 링크를 닫았어요.");
     if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
+    if (share.kind === "collect") return json(collectInfo(share));
     return json({
       title: share.title,
       message: share.message ?? "",
@@ -618,9 +811,90 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     });
   }
 
+  // ---------- 수합: 학생 제출 ----------
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/submit$/.exec(path)) && method === "POST") {
+    const share = await db.getShare(m[1]);
+    if (!share || share.kind !== "collect" || !share.collect || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
+    if (!collectOpen(share)) return fail(410, "제출이 마감됐어요. 선생님께 여쭤 보세요.");
+    const body = (await request.json().catch(() => null)) as { name?: string; password?: string; files?: { name?: string; size?: number }[] } | null;
+    if (!body) return fail(400, "요청 형식이 올바르지 않아요.");
+    if (share.password_hash) {
+      if (!(await verifyPassword(String(body.password ?? ""), share.password_hash))) {
+        if (env.AUTH_LIMITER) {
+          const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+          const { success } = await env.AUTH_LIMITER.limit({ key: `${ip}:${share.id}` });
+          if (!success) return fail(429, "비밀번호를 너무 많이 틀렸어요. 잠시 후 다시 해 주세요.");
+        }
+        return fail(401, "제출 비밀번호가 틀렸어요.");
+      }
+    }
+    const name = cleanPerson(body.name);
+    if (!name) return fail(400, `${share.collect.nameLabel}을 적어 주세요.`);
+    const files = Array.isArray(body.files) ? body.files : [];
+    if (files.length === 0) return fail(400, "낼 파일을 한 개 이상 골라 주세요.");
+    if (files.length > share.collect.perPerson) return fail(400, `한 번에 ${share.collect.perPerson}개까지 낼 수 있어요.`);
+    if (share.files.length + files.length > COLLECT_MAX_FILES) return fail(400, "이 링크에 낼 수 있는 파일 수가 다 찼어요. 선생님께 알려 주세요.");
+    const plan = planOfShare(share);
+    let total = 0;
+    for (const f of files) {
+      const ext = extOf(String(f.name ?? ""));
+      if (!ALLOWED.has(ext)) return fail(400, `이 형식은 낼 수 없어요: ${cleanName(f.name)}`);
+      const size = Number(f.size);
+      if (!Number.isFinite(size) || size <= 0) return fail(400, `빈 파일은 낼 수 없어요: ${cleanName(f.name)}`);
+      if (plan.maxFileMb != null && size > plan.maxFileMb * MB) return fail(400, `파일 하나에 ${sizeLabel(plan.maxFileMb)}까지 낼 수 있어요: ${cleanName(f.name)}`);
+      total += size;
+    }
+    // 모인 파일은 교사의 저장 공간을 씁니다 (나그네가 만든 링크는 링크 하나에 COLLECT_GUEST_MB 까지)
+    const room = share.owner_id
+      ? plan.quotaMb == null
+        ? Infinity
+        : plan.quotaMb * MB - (await usageOf(db, share.owner_id))
+      : COLLECT_GUEST_MB * MB - share.files.reduce((n, f) => n + reservedBytes(share, f), 0);
+    if (total > room) return fail(400, "이 링크에 모을 수 있는 용량이 다 찼어요. 선생님께 알려 주세요.");
+
+    const token = randomToken();
+    const tokenHash = await sha256(token);
+    const base = share.files.reduce((n, f) => Math.max(n, f.position), -1) + 1;
+    const rows: FileRow[] = files.map((f, i) => ({
+      id: randomId(8),
+      share_id: share.id,
+      position: base + i,
+      original_name: cleanName(f.name),
+      ext: extOf(String(f.name)),
+      size: Number(f.size),
+      status: "uploading",
+      error: null,
+      pdf_size: null,
+      original_uploaded: false,
+      submitter: name,
+      submit_token_hash: tokenHash,
+      created_at: new Date().toISOString(),
+    }));
+    await db.addFiles(rows);
+    return json({ token, name, files: rows.map((r) => ({ id: r.id, name: r.original_name, kind: needsPdf(share, r) ? "pdf" : "original" })) }, 201);
+  }
+
+  // 수합: 내가 낸 파일 보기 · 취소 (낸 브라우저의 토큰으로)
+  if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/mine$/.exec(path)) && (method === "GET" || method === "DELETE")) {
+    const share = await db.getShare(m[1]);
+    if (!share || share.kind !== "collect" || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
+    const token = request.headers.get("X-Submit-Token") || "";
+    const hash = token ? await sha256(token) : "";
+    const mine = hash ? share.files.filter((f) => f.submit_token_hash && safeEqual(f.submit_token_hash, hash)) : [];
+    if (method === "DELETE") {
+      if (!collectOpen(share)) return fail(410, "제출이 마감돼서 취소할 수 없어요. 선생님께 여쭤 보세요.");
+      for (const f of mine) await removeFileObjects(env, share, f);
+      await db.deleteFiles(share.id, mine.map((f) => f.id));
+      return json({ ok: true, removed: mine.length });
+    }
+    return json({
+      files: mine.map((f) => ({ id: f.id, name: f.original_name, ext: f.ext, size: f.size, status: f.status, submitter: f.submitter, createdAt: f.created_at ?? null })),
+    });
+  }
+
   if ((m = /^\/api\/s\/([A-Za-z0-9]{6,16})\/auth$/.exec(path)) && method === "POST") {
     const share = await db.getShare(m[1]);
-    if (!share || isExpired(share)) return fail(404, "링크가 없거나 보관 기간이 지났어요.");
+    if (!share || isExpired(share) || share.kind === "collect") return fail(404, "링크가 없거나 보관 기간이 지났어요.");
     if (env.AUTH_LIMITER) {
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
       const { success } = await env.AUTH_LIMITER.limit({ key: `${ip}:${share.id}` });

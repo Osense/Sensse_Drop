@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Eye, EyeOff, FileUp, Lock, Plus, ShieldCheck, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Eye, EyeOff, FileUp, Inbox, Lock, Plus, ShieldCheck, Sparkles, TriangleAlert, X } from "lucide-react";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
 import { StatusPill } from "@/components/status-pill";
@@ -252,6 +252,9 @@ export function HostView() {
           <p className="mt-2 text-muted-foreground">
             한글(HWP · HWPX)은 보이는 그대로 PDF로 바꾸고, 이미지 · 오피스 문서 등 다른 파일은 그대로, 비밀번호 걸린 링크 하나로 나눠 줘요.
           </p>
+          <Link href="/collect/" className="mt-3 inline-flex items-center gap-1.5 rounded-full border bg-background px-3 py-1.5 text-sm font-medium transition-colors hover:border-brand/50 hover:text-brand">
+            <Inbox className="size-4 text-brand" /> 학생에게 과제를 걷어야 하나요? <b>수합 링크 만들기</b> →
+          </Link>
         </div>
 
         {me?.lapse && <LapseBanner lapse={me.lapse} />}

@@ -10,13 +10,15 @@ import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
 import { STATIC_ONLY } from "@/lib/config";
-import { api, type DownloadItem } from "@/lib/api";
+import { api, type CollectInfo, type DownloadItem } from "@/lib/api";
+import { SubmitView } from "@/components/submit-view";
 import { baseOf, extOf, formatDate, formatSize } from "@/lib/format";
 import { decryptName, decryptStream, derivePassword, pickSaveTarget, saveDecrypted, sessionKeys, unwrapShareKey } from "@/lib/e2e";
 
 const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", mp4: "video/mp4", mp3: "audio/mpeg" };
 
 type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean; kdf?: { iter: number; salt: string } | null };
+const isCollect = (i: Info | CollectInfo): i is CollectInfo => (i as CollectInfo).kind === "collect";
 type State = "loading" | "login" | "list" | "gone";
 
 /** 받는 사람 화면: /<코드> (예: drop.wsns.studio/k3m9qr) */
@@ -24,6 +26,7 @@ export function ShareView() {
   const [id, setId] = React.useState("");
   const [state, setState] = React.useState<State>("loading");
   const [info, setInfo] = React.useState<Info | null>(null);
+  const [collect, setCollect] = React.useState<CollectInfo | null>(null);
   const [items, setItems] = React.useState<DownloadItem[]>([]);
   const [message, setMessage] = React.useState("");
   const [pw, setPw] = React.useState("");
@@ -75,8 +78,14 @@ export function ShareView() {
       setState("gone");
       return;
     }
-    api<Info>(`/api/s/${shareId}`)
+    api<Info | CollectInfo>(`/api/s/${shareId}`)
       .then((i) => {
+        // 수합 링크: 학생 제출 화면
+        if (isCollect(i)) {
+          document.title = `${i.title} · 과제 제출 · 쎈스드롭`;
+          setCollect(i);
+          return;
+        }
         setInfo(i);
         document.title = `${i.title} · 쎈스드롭`;
         // 잠긴 링크는 열쇠가 이 탭에 있어야 목록을 보여 줘요 (없으면 비밀번호를 다시 물어요)
@@ -164,6 +173,8 @@ export function ShareView() {
       });
     }
   }
+
+  if (collect) return <SubmitView id={id} info={collect} />;
 
   return (
     <div className="relative">

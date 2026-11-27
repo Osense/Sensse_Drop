@@ -38,6 +38,10 @@ export interface FileRow {
   name_enc?: string | null;
   /** 받는 사람이 내려받은 횟수 */
   download_count?: number;
+  /** 수합 링크: 파일을 낸 사람이 적은 이름 */
+  submitter?: string | null;
+  /** 수합 링크: 낸 사람 토큰의 SHA-256 */
+  submit_token_hash?: string | null;
   created_at?: string;
 }
 
@@ -64,6 +68,24 @@ export interface ShareRow {
   orphaned_at?: string | null;
   /** 종단간 암호화 정보 (없으면 예전 평문 링크) */
   enc?: import("./e2e").EncMeta | null;
+  /** share: 나눠 주기 · collect: 수합 (없으면 share) */
+  kind?: "share" | "collect";
+  /** 수합 설정 */
+  collect?: CollectSettings | null;
+}
+
+/** 수합(과제 걷기) 링크 설정 */
+export interface CollectSettings {
+  /** 한 사람이 한 번에 낼 수 있는 파일 수 */
+  perPerson: number;
+  /** 이름 칸 안내 (예: 학번과 이름) */
+  nameLabel: string;
+  /** 학생 명단 (안 낸 사람 확인용, 교사만 봄) */
+  roster: string[];
+  /** 제출 마감 시각 (없으면 자동 삭제 전까지 받음) */
+  deadline: string | null;
+  /** 교사가 제출을 직접 마감한 시각 */
+  closedAt: string | null;
 }
 
 export interface ShareWithFiles extends ShareRow {
@@ -91,4 +113,7 @@ export interface ShareSummary {
   /** 지금 차지하는 저장 공간 (닫힌 링크는 0) */
   bytes: number;
   files: { id: string; name: string; ext: string; size: number; downloads: number }[];
+  kind: "share" | "collect";
+  /** 수합 링크: 낸 사람 수 */
+  submitters: number;
 }

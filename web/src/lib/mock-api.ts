@@ -31,7 +31,12 @@ type MockFile = {
   originalUploaded: boolean;
   downloads?: number;
   nameEnc?: string | null;
+  /** 수합: 낸 사람 이름 · 토큰 · 낸 시각 */
+  submitter?: string | null;
+  submitToken?: string | null;
+  createdAt?: string;
 };
+type MockCollect = { perPerson: number; nameLabel: string; roster: string[]; deadline: string | null; closedAt: string | null };
 type MockShare = {
   id: string;
   title: string;
@@ -49,6 +54,8 @@ type MockShare = {
   /** 종단간 암호화 (password 자리에는 비밀번호 대신 확인용 값) */
   enc?: { iter: number; salt: string; wrap: string | null; pepper: string };
   files: MockFile[];
+  kind?: "share" | "collect";
+  collect?: MockCollect | null;
 };
 
 const MB = 1048576;
@@ -143,6 +150,8 @@ function summary(s: MockShare) {
     downloads: files.reduce((n, f) => n + f.downloads, 0),
     bytes: state === "open" && !s.purgedAt ? s.files.reduce((n, f) => n + stored(s, f), 0) : 0,
     files,
+    kind: s.kind ?? "share",
+    submitters: s.kind === "collect" ? new Set(s.files.map((f) => f.submitter ?? "")).size : 0,
   };
 }
 const shareUrl = (id: string) => `${location.origin}${BASE_PATH}/s/?id=${id}`;
@@ -190,9 +199,14 @@ async function usage() {
     .reduce((n, s) => n + s.files.reduce((m, f) => m + reserved(s, f), 0), 0);
 }
 
-async function manageable(id: string, init?: RequestInit) {
+async function manageable(id: string, init?: RequestInit, fileId?: string) {
   const s = await getShare(id);
   if (!s) throw new MockError("링크가 없어요.", 404);
+  const sub = header(init, "X-Submit-Token");
+  if (sub && fileId) {
+    if (s.kind === "collect" && s.files.some((f) => f.id === fileId && f.submitToken === sub)) return s;
+    throw new MockError("파일을 찾을 수 없어요.", 404);
+  }
   if (header(init, "X-Admin-Token") !== s.adminToken && !(s.member && isMember(init))) throw new MockError("이 링크를 관리할 권한이 없어요.", 403);
   return s;
 }
@@ -209,6 +223,37 @@ const authed = (id: string) => {
     return false;
   }
 };
+
+/** 마감: 요금제가 고를 수 있는 삭제 시간, 또는 직접 정한 시각 (worker resolveExpiry 와 같음) */
+function resolveExpiry(b: { expiresAt?: string; expireMinutes?: number; acceptBeyondPlan?: boolean }, plan: Plan): number {
+  let expiresAt: number;
+  if (b.expiresAt != null) {
+    if (!plan.maxCustomMinutes) throw new MockError("마감 시각 직접 지정은 로그인하면 쓸 수 있어요.", 400);
+    const t = Date.parse(String(b.expiresAt));
+    if (!Number.isFinite(t) || t < Date.now() + (MIN_CUSTOM_MINUTES - 1) * 60000) throw new MockError(`마감 시각은 지금부터 ${MIN_CUSTOM_MINUTES}분 뒤부터 정할 수 있어요.`, 400);
+    if (t > Date.now() + plan.maxCustomMinutes * 60000 + 60000) throw new MockError(`${plan.name}은 마감을 ${plan.id === "pro" ? "1년" : `${plan.maxCustomMinutes / 1440}일`} 안에서 정할 수 있어요.`, 400);
+    expiresAt = t;
+  } else {
+    const minutes = Number(b.expireMinutes) || plan.defaultExpire;
+    if (!plan.expireMinutes.includes(minutes)) throw new MockError(plan.id === "guest" ? "나그네는 10분 후 삭제만 쓸 수 있어요." : "이 보관 기간은 프로에서 쓸 수 있어요.", 400);
+    expiresAt = Date.now() + minutes * 60000;
+  }
+  const proUntil = mockProUntil();
+  if (plan.id === "pro" && proUntil && expiresAt > proUntil && !b.acceptBeyondPlan) {
+    throw new MockError("프로 구독 기간 이후까지 열리는 링크예요. 확인이 필요해요.", 409, { code: "beyond_plan", proUntil: new Date(proUntil).toISOString() });
+  }
+  return expiresAt;
+}
+
+const cleanPerson = (n: unknown) =>
+  String(n ?? "")
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 30);
+const collectOpen = (s: MockShare) => Boolean(s.collect) && !expired(s) && !s.collect!.closedAt && (!s.collect!.deadline || Date.parse(s.collect!.deadline) > Date.now());
+const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
 
 // ---------- 라우터 ----------
 export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
@@ -255,22 +300,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     }
     const pw = String(b.authKey ?? "");
     if (pw.length !== 43 || !b.kdf?.salt) throw new MockError("페이지를 새로고침한 뒤 다시 해 주세요.", 400);
-    let expiresAt: number;
-    if (b.expiresAt != null) {
-      if (!plan.maxCustomMinutes) throw new MockError("마감 시각 직접 지정은 로그인하면 쓸 수 있어요.", 400);
-      const t = Date.parse(String(b.expiresAt));
-      if (!Number.isFinite(t) || t < Date.now() + (MIN_CUSTOM_MINUTES - 1) * 60000) throw new MockError(`마감 시각은 지금부터 ${MIN_CUSTOM_MINUTES}분 뒤부터 정할 수 있어요.`, 400);
-      if (t > Date.now() + plan.maxCustomMinutes * 60000 + 60000) throw new MockError(`${plan.name}은 마감을 ${plan.id === "pro" ? "1년" : `${plan.maxCustomMinutes / 1440}일`} 안에서 정할 수 있어요.`, 400);
-      expiresAt = t;
-    } else {
-      const minutes = Number(b.expireMinutes) || plan.defaultExpire;
-      if (!plan.expireMinutes.includes(minutes)) throw new MockError(plan.id === "guest" ? "나그네는 10분 후 삭제만 쓸 수 있어요." : "이 보관 기간은 프로에서 쓸 수 있어요.", 400);
-      expiresAt = Date.now() + minutes * 60000;
-    }
-    const proUntil = mockProUntil();
-    if (plan.id === "pro" && proUntil && expiresAt > proUntil && !b.acceptBeyondPlan) {
-      throw new MockError("프로 구독 기간 이후까지 열리는 링크예요. 확인이 필요해요.", 409, { code: "beyond_plan", proUntil: new Date(proUntil).toISOString() });
-    }
+    const expiresAt = resolveExpiry(b, plan);
     const now = Date.now();
     const share: MockShare = {
       id: Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(""),
@@ -319,6 +349,117 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
     return { ok: true } as T;
   }
 
+  // ---------- 수합 (worker 와 같은 규칙) ----------
+  if (path === "/api/collects" && method === "POST") {
+    const plan = planOf(init);
+    const b = await body();
+    const pw = String(b.password ?? "");
+    if (pw && pw.length < 4) throw new MockError("제출 비밀번호는 4~64자로 정하거나 비워 두세요.", 400);
+    const expiresAt = resolveExpiry(b, plan);
+    let deadline: string | null = null;
+    if (b.deadline) {
+      const t = Date.parse(String(b.deadline));
+      if (!Number.isFinite(t) || t <= Date.now()) throw new MockError("제출 마감은 지금보다 뒤로 정해 주세요.", 400);
+      if (t > expiresAt) throw new MockError("제출 마감은 파일이 지워지는 시각보다 앞이어야 해요.", 400);
+      deadline = new Date(t).toISOString();
+    }
+    const share: MockShare = {
+      id: newCode(),
+      title: String(b.title ?? "").trim().slice(0, 40) || "과제 제출",
+      message: String(b.message ?? "").trim().slice(0, 1000),
+      output: "original",
+      password: pw,
+      adminToken: rid(32),
+      member: isMember(init),
+      plan: plan.id,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+      files: [],
+      kind: "collect",
+      collect: {
+        perPerson: Math.min(plan.maxFiles, Math.max(1, Math.floor(Number(b.perPerson) || Math.min(3, plan.maxFiles)))),
+        nameLabel: String(b.nameLabel ?? "").trim().slice(0, 20) || "이름",
+        roster: [...new Set((Array.isArray(b.roster) ? b.roster : []).map(cleanPerson).filter(Boolean))].slice(0, 300) as string[],
+        deadline,
+        closedAt: null,
+      },
+    };
+    await putShare(share);
+    return { id: share.id, adminToken: share.adminToken, url: shareUrl(share.id) } as T;
+  }
+
+  if ((m = /^\/api\/shares\/(\w+)\/collect$/.exec(path)) && method === "POST") {
+    const s = await manageable(m[1], init);
+    if (!s.collect) throw new MockError("수합 링크가 아니에요.", 400);
+    const b = await body();
+    if (typeof b.closed === "boolean") {
+      s.collect.closedAt = b.closed ? new Date().toISOString() : null;
+      if (!b.closed && s.collect.deadline && Date.parse(s.collect.deadline) < Date.now()) s.collect.deadline = null;
+    }
+    if (Array.isArray(b.roster)) s.collect.roster = [...new Set(b.roster.map(cleanPerson).filter(Boolean))].slice(0, 300) as string[];
+    await putShare(s);
+    return { collect: s.collect } as T;
+  }
+
+  if ((m = /^\/api\/shares\/(\w+)\/files\/(\w+)$/.exec(path)) && method === "DELETE") {
+    const s = await manageable(m[1], init);
+    const fid = m[2];
+    s.files = s.files.filter((f) => f.id !== fid);
+    for (const k of ["pdf", "original"]) await tx("blobs", "readwrite", (st) => st.delete(blobKey(s.id, fid, k)));
+    await putShare(s);
+    return { ok: true } as T;
+  }
+
+  if ((m = /^\/api\/s\/(\w+)\/submit$/.exec(path)) && method === "POST") {
+    const s = await viewable(m[1]);
+    if (s.kind !== "collect" || !s.collect) throw new MockError("링크가 없어요.", 404);
+    if (!collectOpen(s)) throw new MockError("제출이 마감됐어요. 선생님께 여쭤 보세요.", 410);
+    const b = await body();
+    if (s.password && String(b.password ?? "") !== s.password) throw new MockError("제출 비밀번호가 틀렸어요.", 401);
+    const name = cleanPerson(b.name);
+    if (!name) throw new MockError(`${s.collect.nameLabel}을 적어 주세요.`, 400);
+    const files: { name: string; size: number }[] = Array.isArray(b.files) ? b.files : [];
+    if (!files.length) throw new MockError("낼 파일을 한 개 이상 골라 주세요.", 400);
+    if (files.length > s.collect.perPerson) throw new MockError(`한 번에 ${s.collect.perPerson}개까지 낼 수 있어요.`, 400);
+    const plan = PLANS[s.plan ?? "member"];
+    for (const f of files) {
+      if (!(ALLOWED_EXT as readonly string[]).includes(extOf(f.name))) throw new MockError(`이 형식은 낼 수 없어요: ${f.name}`, 400);
+      if (!(f.size > 0)) throw new MockError(`빈 파일은 낼 수 없어요: ${f.name}`, 400);
+      if (plan.maxFileMb != null && f.size > plan.maxFileMb * MB) throw new MockError(`파일 하나에 ${plan.maxFileMb}MB까지 낼 수 있어요: ${f.name}`, 400);
+    }
+    const token = rid(32);
+    const rows: MockFile[] = files.map((f) => ({
+      id: rid(8),
+      name: String(f.name).slice(0, 200),
+      ext: extOf(f.name),
+      size: f.size,
+      status: "uploading",
+      error: null,
+      pdfSize: null,
+      originalUploaded: false,
+      submitter: name,
+      submitToken: token,
+      createdAt: new Date().toISOString(),
+    }));
+    s.files.push(...rows);
+    await putShare(s);
+    return { token, name, files: rows.map((r) => ({ id: r.id, name: r.name, kind: needsPdf(s, r) ? "pdf" : "original" })) } as T;
+  }
+
+  if ((m = /^\/api\/s\/(\w+)\/mine$/.exec(path))) {
+    const s = await viewable(m[1]);
+    const token = header(init, "X-Submit-Token");
+    const mine = token ? s.files.filter((f) => f.submitToken === token) : [];
+    if (method === "DELETE") {
+      if (!collectOpen(s)) throw new MockError("제출이 마감돼서 취소할 수 없어요. 선생님께 여쭤 보세요.", 410);
+      s.files = s.files.filter((f) => !mine.includes(f));
+      for (const f of mine) for (const k of ["pdf", "original"]) await tx("blobs", "readwrite", (st) => st.delete(blobKey(s.id, f.id, k)));
+      await putShare(s);
+      return { ok: true, removed: mine.length } as T;
+    }
+    return { files: mine.map((f) => ({ id: f.id, name: f.name, ext: f.ext, size: f.size, status: f.status, submitter: f.submitter, createdAt: f.createdAt ?? null })) } as T;
+  }
+
   if ((m = /^\/api\/shares\/(\w+)\/close$/.exec(path)) && method === "POST") {
     const s = await manageable(m[1], init);
     const now = new Date().toISOString();
@@ -330,7 +471,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   if ((m = /^\/api\/shares\/(\w+)\/files\/(\w+)$/.exec(path)) && method === "PUT") {
-    const s = await manageable(m[1], init);
+    const s = await manageable(m[1], init, m[2]);
     const f = s.files.find((x) => x.id === m![2]);
     if (!f) throw new MockError("파일이 없어요.", 404);
     const kind = u.searchParams.get("kind") === "original" ? "original" : "pdf";
@@ -346,7 +487,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
 
   // 큰 파일 나눠 올리기 (worker 의 R2 멀티파트와 같은 주소)
   if ((m = /^\/api\/shares\/(\w+)\/files\/(\w+)\/mpu(?:\/([\w.~-]+)(?:\/(\d+|complete))?)?$/.exec(path))) {
-    const s = await manageable(m[1], init);
+    const s = await manageable(m[1], init, m[2]);
     if (expired(s)) throw new MockError("닫힌 링크예요.", 410);
     const f = s.files.find((x) => x.id === m![2]);
     if (!f) throw new MockError("파일이 없어요.", 404);
@@ -403,8 +544,11 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
       createdAt: s.createdAt,
       expiresAt: s.expiresAt,
       url: shareUrl(s.id),
+      kind: s.kind ?? "share",
+      collect: s.collect ? { ...s.collect, hasPassword: Boolean(s.password) } : null,
+      purged: Boolean(s.purgedAt),
       enc: s.enc ?? null,
-      files: s.files.map((f) => ({ id: f.id, name: f.name, nameEnc: f.nameEnc ?? null, ext: f.ext, size: f.size, status: f.status, error: f.error, pdfSize: f.pdfSize })),
+      files: s.files.map((f) => ({ id: f.id, name: f.name, nameEnc: f.nameEnc ?? null, ext: f.ext, size: f.size, status: f.status, error: f.error, pdfSize: f.pdfSize, submitter: f.submitter ?? null, createdAt: f.createdAt ?? null })),
     } as T;
   }
 
@@ -416,11 +560,27 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
 
   if ((m = /^\/api\/s\/(\w+)$/.exec(path))) {
     const s = await viewable(m[1]);
+    if (s.kind === "collect" && s.collect) {
+      const c = s.collect;
+      return {
+        kind: "collect",
+        title: s.title,
+        message: s.message,
+        expiresAt: s.expiresAt,
+        deadline: c.deadline && Date.parse(c.deadline) < Date.parse(s.expiresAt) ? c.deadline : s.expiresAt,
+        open: collectOpen(s),
+        needsPassword: Boolean(s.password),
+        perPerson: c.perPerson,
+        nameLabel: c.nameLabel,
+        maxFileMb: PLANS[s.plan ?? "member"].maxFileMb,
+      } as T;
+    }
     return { title: s.title, message: s.message, expiresAt: s.expiresAt, fileCount: items(s).length, kdf: s.enc ? { iter: s.enc.iter, salt: s.enc.salt } : null, authed: authed(s.id) } as T;
   }
 
   if ((m = /^\/api\/s\/(\w+)\/auth$/.exec(path)) && method === "POST") {
     const s = await viewable(m[1]);
+    if (s.kind === "collect") throw new MockError("링크가 없어요.", 404);
     const b = await body();
     if (String((s.enc ? b.authKey : b.password) ?? "") !== s.password) throw new MockError("비밀번호가 틀렸어요.", 401);
     await putShare({ ...s, openCount: (s.openCount ?? 0) + 1 });
@@ -432,6 +592,7 @@ export async function mockApi<T>(url: string, init?: RequestInit): Promise<T> {
 
   if ((m = /^\/api\/s\/(\w+)\/files$/.exec(path))) {
     const s = await viewable(m[1]);
+    if (s.kind === "collect") throw new MockError("링크가 없어요.", 404);
     if (!authed(s.id)) throw new MockError("비밀번호를 먼저 넣어 주세요.", 401);
     return { title: s.title, message: s.message, expiresAt: s.expiresAt, items: items(s) } as T;
   }
@@ -471,4 +632,18 @@ export async function mockDownload(id: string, fileId: string, kind: "pdf" | "or
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/** 체험판: 링크 주인이 올라온 파일 받기 (/api/shares/<코드>/files/<파일>/download) */
+export async function mockBlob(url: string, init?: RequestInit): Promise<Blob> {
+  const u = new URL(url, location.href);
+  const m = /^\/api\/shares\/(\w+)\/files\/(\w+)\/download\/?$/.exec(u.pathname);
+  if (!m) throw new MockError("체험판에서는 쓸 수 없는 기능이에요.", 404);
+  const s = await manageable(m[1], init);
+  const f = s.files.find((x) => x.id === m[2]);
+  if (!f) throw new MockError("파일을 찾을 수 없어요.", 404);
+  const kind = u.searchParams.get("kind") || (needsOriginal(s, f) ? "original" : "pdf");
+  const blob = await tx<Blob | undefined>("blobs", "readonly", (st) => st.get(blobKey(s.id, f.id, kind)));
+  if (!blob) throw new MockError("아직 올라오지 않은 파일이에요.", 404);
+  return blob;
 }
