@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import QRCode from "qrcode";
-import { Check, Copy, ExternalLink, Lock, RotateCw, Upload } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Loader2, Lock, RotateCw, Upload } from "lucide-react";
 import { uploadFile } from "@/lib/upload";
 import { isHangul } from "@/lib/file-types";
 import { FileBadge } from "@/components/file-badge";
@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
 import { QrButtons, QrViewer, saveQrImage } from "@/components/qr-viewer";
-import { api, type ManagedShare } from "@/lib/api";
+import { api, downloadOwnFile, type ManagedFile, type ManagedShare } from "@/lib/api";
 import { hwpToPdf } from "@/lib/convert";
 import { formatDate, formatSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -125,6 +125,20 @@ export function ShareManager({
     }
   }
 
+  const [getting, setGetting] = React.useState<string | null>(null);
+  /** 내가 올린 파일 받아 보기 (무엇을 보냈는지 확인) */
+  async function getOwn(f: ManagedFile, kind: "pdf" | "original") {
+    setGetting(`${f.id}-${kind}`);
+    try {
+      const fallback = kind === "pdf" ? `${f.name.replace(/\.[A-Za-z0-9]+$/, "")}.pdf` : f.name;
+      await downloadOwnFile(`/api/shares/${id}/files/${f.id}/download?kind=${kind}`, await headers(), fallback);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setGetting(null);
+    }
+  }
+
   if (!share) {
     return <Card className="h-64 animate-pulse bg-muted/40" />;
   }
@@ -195,7 +209,33 @@ export function ShareManager({
                   </span>
                 )}
               </span>
-              <StatusPill status={f.status} />
+              {f.status === "done" ? (
+                <span className="flex shrink-0 items-center gap-1">
+                  {(
+                    [
+                      ["pdf", f.ext === "pdf" || (isHangul(f.ext) && share.output !== "original")],
+                      ["original", isHangul(f.ext) ? share.output !== "pdf" : f.ext !== "pdf"],
+                    ] as const
+                  )
+                    .filter(([, on]) => on)
+                    .map(([kind]) => (
+                      <Button
+                        key={kind}
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2.5"
+                        title={kind === "pdf" ? "올린 PDF 받아 보기" : "올린 원본 받아 보기"}
+                        disabled={getting === `${f.id}-${kind}`}
+                        onClick={() => getOwn(f, kind)}
+                      >
+                        {getting === `${f.id}-${kind}` ? <Loader2 className="animate-spin" /> : <Download />}
+                        {kind === "pdf" ? "PDF" : isHangul(f.ext) ? "원본" : "받기"}
+                      </Button>
+                    ))}
+                </span>
+              ) : (
+                <StatusPill status={f.status} />
+              )}
               {fixing === f.id && progress[f.id] != null && <span className="text-xs tabular-nums text-brand">{Math.floor(progress[f.id] * 100)}%</span>}
               {f.status === "uploading" && fixing !== f.id && (
                 <Button

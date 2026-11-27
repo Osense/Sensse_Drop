@@ -599,6 +599,18 @@ export async function mockDownload(id: string, fileId: string, kind: "pdf" | "or
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
+/** 체험판: 링크 주인이 올린 파일과 받는 이름 */
+export async function mockFile(url: string, init?: RequestInit): Promise<{ blob: Blob; name: string }> {
+  const u = new URL(url, location.href);
+  const m = /^\/api\/shares\/(\w+)\/files\/(\w+)\/download\/?$/.exec(u.pathname);
+  if (!m) throw new MockError("체험판에서는 쓸 수 없는 기능이에요.", 404);
+  const s = await manageable(m[1], init);
+  const f = s.files.find((x) => x.id === m[2]);
+  if (!f) throw new MockError("파일을 찾을 수 없어요.", 404);
+  const kind = u.searchParams.get("kind") || (needsOriginal(s, f) ? "original" : "pdf");
+  return { blob: await mockBlob(url, init), name: kind === "pdf" ? `${baseName(f.name)}.pdf` : f.name };
+}
+
 /** 체험판: 링크 주인이 올라온 파일 받기 (/api/shares/<코드>/files/<파일>/download) */
 export async function mockBlob(url: string, init?: RequestInit): Promise<Blob> {
   const u = new URL(url, location.href);
