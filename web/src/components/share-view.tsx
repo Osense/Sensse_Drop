@@ -109,7 +109,6 @@ export function ShareView() {
           </div>
         </div>
       )}
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-72" />
       <div className="mx-auto max-w-lg px-4 py-8 sm:py-12">
         {state === "loading" && (
           <div className="grid place-items-center py-24 text-muted-foreground">

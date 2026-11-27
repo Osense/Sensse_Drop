@@ -54,7 +54,6 @@ export function HomeView({ initial = null }: { initial?: Mode | null }) {
 
   return (
     <div className="relative">
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-96" />
       <div className="mx-auto max-w-3xl px-4 py-10 sm:py-16">
         <div className="animate-fade-up text-center">
           <p className="text-sm font-semibold text-brand">쎈스드롭 · WSNS 쎈스 시리즈</p>
