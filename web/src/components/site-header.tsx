@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "보내기" },
+  { href: "/collect/", label: "수합" },
   { href: "/links/", label: "배포 기록" },
   { href: "/plans/", label: "요금제" },
 ];
