@@ -336,7 +336,6 @@ export function CollectHostView({ onHome }: { onHome?: () => void } = {}) {
 
   return (
     <div className="relative">
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-80" />
       <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
         <div className="mb-6 animate-fade-up">
           <p className="text-sm font-semibold text-brand">과제 수합하기</p>

@@ -92,6 +92,15 @@ export async function unwrapShareKey(pwKey: Uint8Array<ArrayBuffer>, pepper: str
   }
 }
 
+/** 링크 주인이 비밀번호로 링크 열쇠 풀기 (/manage 의 enc 정보로) */
+export async function unlockWithPassword(shareId: string, enc: { iter: number; salt: string; wrap: string | null; pepper: string }, password: string) {
+  if (!enc.wrap) throw new Error("이 링크는 아직 열쇠가 없어요.");
+  const { pwKey } = await derivePassword(password, enc.salt, enc.iter);
+  const k = await unwrapShareKey(pwKey, enc.pepper, shareId, enc.wrap);
+  sessionKeys.set(shareId, k);
+  return k;
+}
+
 const aesKey = (k: Uint8Array<ArrayBuffer>) => crypto.subtle.importKey("raw", k, "AES-GCM", false, ["encrypt", "decrypt"]);
 
 /** 파일 이름 잠그기 (파일 id 에 묶어 다른 파일로 바꿔치기 못하게) */

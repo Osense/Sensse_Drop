@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import QRCode from "qrcode";
-import { Check, Copy, ExternalLink, Lock, RotateCw, ShieldCheck, Upload } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Loader2, Lock, RotateCw, ShieldCheck, Upload } from "lucide-react";
 import { uploadFile } from "@/lib/upload";
 import { isHangul } from "@/lib/file-types";
 import { FileBadge } from "@/components/file-badge";
@@ -13,9 +13,9 @@ import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
 import { QrButtons, QrViewer, saveQrImage } from "@/components/qr-viewer";
-import { api, type ManagedShare } from "@/lib/api";
+import { api, downloadOwnFile, type ManagedFile, type ManagedShare } from "@/lib/api";
 import { hwpToPdf } from "@/lib/convert";
-import { decryptName, derivePassword, localNames, sessionKeys, unwrapShareKey } from "@/lib/e2e";
+import { decryptName, localNames, sessionKeys, unlockWithPassword } from "@/lib/e2e";
 import { Dialog } from "@/components/ui/dialog";
 import { formatDate, formatSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -117,7 +117,9 @@ export function ShareManager({
    * 올리다 끊긴 파일: 같은 파일을 다시 골라 이어 올리기 (큰 파일은 올린 조각 다음부터)
    */
   /** 잠긴 링크에 다시 올리려면 열쇠가 필요해요: 비밀번호를 넣어 풀기 */
-  const [unlock, setUnlock] = React.useState<File | null>(null);
+  /** 열쇠가 생기면 이어서 할 일: 다시 올릴 파일, 또는 받아 볼 파일 */
+  type Pending = { upload: File } | { get: ManagedFile; kind: "pdf" | "original" };
+  const [unlock, setUnlock] = React.useState<Pending | null>(null);
   const [unlockPw, setUnlockPw] = React.useState("");
   const [unlockErr, setUnlockErr] = React.useState<string | null>(null);
   const [unlocking, setUnlocking] = React.useState(false);
@@ -127,14 +129,13 @@ export function ShareManager({
     setUnlocking(true);
     setUnlockErr(null);
     try {
-      const { pwKey } = await derivePassword(unlockPw, share.enc.salt, share.enc.iter);
-      const k = await unwrapShareKey(pwKey, share.enc.pepper, share.id, share.enc.wrap);
-      sessionKeys.set(share.id, k);
+      const k = await unlockWithPassword(share.id, share.enc, unlockPw);
       setKey(k);
-      const file = unlock;
+      const next = unlock;
       setUnlock(null);
       setUnlockPw("");
-      reupload(file, k);
+      if ("upload" in next) reupload(next.upload, k);
+      else getOwn(next.get, next.kind, k);
     } catch (err) {
       setUnlockErr((err as Error).message);
     } finally {
@@ -148,7 +149,7 @@ export function ShareManager({
     if (!fileId || !share || !f) return;
     if (share.enc && !k) {
       setUnlockErr(null);
-      setUnlock(file);
+      setUnlock({ upload: file });
       return;
     }
     const shareKey = share.enc ? k : null;
@@ -173,6 +174,28 @@ export function ShareManager({
     } finally {
       setFixing(null);
       load();
+    }
+  }
+
+  const [getting, setGetting] = React.useState<string | null>(null);
+  /** 내가 올린 파일 받아 보기 (무엇을 보냈는지 확인) */
+  async function getOwn(f: ManagedFile, kind: "pdf" | "original", k: Uint8Array<ArrayBuffer> | null = key) {
+    // 잠긴 링크는 열쇠가 있어야 풀어 볼 수 있어요 (없으면 비밀번호를 물어요)
+    if (share?.enc && !k) {
+      setUnlockErr(null);
+      setUnlock({ get: f, kind });
+      return;
+    }
+    setGetting(`${f.id}-${kind}`);
+    try {
+      let real = nameOf(f);
+      if (k && f.nameEnc) real = await decryptName(k, f.id, f.nameEnc).catch(() => real);
+      const fallback = kind === "pdf" ? `${real.replace(/\.[A-Za-z0-9]+$/, "")}.pdf` : real;
+      await downloadOwnFile(`/api/shares/${id}/files/${f.id}/download?kind=${kind}`, await headers(), fallback, share?.enc ? k : null);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setGetting(null);
     }
   }
 
@@ -253,7 +276,33 @@ export function ShareManager({
                   </span>
                 )}
               </span>
-              <StatusPill status={f.status} />
+              {f.status === "done" ? (
+                <span className="flex shrink-0 items-center gap-1">
+                  {(
+                    [
+                      ["pdf", f.ext === "pdf" || (isHangul(f.ext) && share.output !== "original")],
+                      ["original", isHangul(f.ext) ? share.output !== "pdf" : f.ext !== "pdf"],
+                    ] as const
+                  )
+                    .filter(([, on]) => on)
+                    .map(([kind]) => (
+                      <Button
+                        key={kind}
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2.5"
+                        title={kind === "pdf" ? "올린 PDF 받아 보기" : "올린 원본 받아 보기"}
+                        disabled={getting === `${f.id}-${kind}`}
+                        onClick={() => getOwn(f, kind)}
+                      >
+                        {getting === `${f.id}-${kind}` ? <Loader2 className="animate-spin" /> : <Download />}
+                        {kind === "pdf" ? "PDF" : isHangul(f.ext) ? "원본" : "받기"}
+                      </Button>
+                    ))}
+                </span>
+              ) : (
+                <StatusPill status={f.status} />
+              )}
               {fixing === f.id && progress[f.id] != null && <span className="text-xs tabular-nums text-brand">{Math.floor(progress[f.id] * 100)}%</span>}
               {f.status === "uploading" && fixing !== f.id && (
                 <Button
@@ -308,7 +357,7 @@ export function ShareManager({
         open={unlock != null}
         onClose={() => setUnlock(null)}
         title="비밀번호를 넣어 주세요"
-        description="파일은 이 링크의 비밀번호로 잠가서 올려요. 서버는 비밀번호를 모르기 때문에 다시 올리려면 한 번 넣어야 해요."
+        description="파일은 이 링크의 비밀번호로 잠겨 있어요. 서버는 비밀번호를 모르기 때문에, 파일을 다시 올리거나 받아 보려면 한 번 넣어야 해요."
       >
         <form onSubmit={doUnlock} className="mt-4 space-y-3">
           <Input type="password" autoFocus autoComplete="off" value={unlockPw} onChange={(e) => setUnlockPw(e.target.value)} placeholder="링크 비밀번호" className="h-11" />
@@ -318,7 +367,7 @@ export function ShareManager({
               취소
             </Button>
             <Button type="submit" variant="brand" disabled={!unlockPw || unlocking}>
-              {unlocking ? "확인 중…" : "확인하고 올리기"}
+              {unlocking ? "확인 중…" : "확인"}
             </Button>
           </div>
         </form>

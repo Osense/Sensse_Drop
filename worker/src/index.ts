@@ -186,6 +186,7 @@ function summarize(env: Env, request: Request, s: ShareWithFiles): ShareSummary 
     purged: Boolean(s.purged_at),
     forgetAt: s.purged_at ? new Date(Date.parse(s.purged_at) + HISTORY_DAYS * 86400000).toISOString() : null,
     member: Boolean(s.owner_id),
+    encrypted: Boolean(encOf(s)),
     opens: s.open_count ?? 0,
     downloads: files.reduce((n, f) => n + f.downloads, 0),
     bytes: state === "open" && !s.purged_at ? s.files.reduce((n, f) => n + storedBytes(s, f), 0) : 0,
@@ -612,7 +613,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     if (!obj) return fail(404, "아직 올라오지 않은 파일이에요.");
     return new Response(obj.body, {
       headers: {
-        "Content-Type": kind === "pdf" ? "application/pdf" : "application/octet-stream",
+        "Content-Type": kind === "pdf" && !encOf(share) ? "application/pdf" : "application/octet-stream",
         "Content-Length": String(obj.size),
         "Content-Disposition": contentDisposition(kind === "pdf" ? `${baseName(file.original_name)}.pdf` : file.original_name),
         "Cache-Control": "private, no-store",

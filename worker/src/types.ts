@@ -108,6 +108,8 @@ export interface ShareSummary {
   /** 기록이 저절로 지워지는 시각 */
   forgetAt: string | null;
   member: boolean;
+  /** 종단간 암호화 링크인지 */
+  encrypted?: boolean;
   opens: number;
   downloads: number;
   /** 지금 차지하는 저장 공간 (닫힌 링크는 0) */

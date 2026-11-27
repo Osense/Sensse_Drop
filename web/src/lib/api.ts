@@ -102,6 +102,8 @@ export type ShareSummary = {
   /** 기록이 저절로 지워지는 시각 */
   forgetAt: string | null;
   member: boolean;
+  /** 종단간 암호화 링크인지 (파일을 받으려면 링크 열쇠가 필요) */
+  encrypted?: boolean;
   opens: number;
   downloads: number;
   /** 지금 차지하는 저장 공간 */
@@ -150,6 +152,53 @@ export async function apiBlob(url: string, init?: RequestInit): Promise<Blob> {
     throw new ApiError(data?.error || `받지 못했어요 (${res.status})`, res.status);
   }
   return res.blob();
+}
+
+/** 링크 주인이 올린 파일 받아서 저장 (이름은 서버가 정한 이름, 없으면 fallback) */
+export async function downloadOwnFile(url: string, headers: Record<string, string>, fallback: string, key?: Uint8Array<ArrayBuffer> | null) {
+  let blob: Blob;
+  let name = fallback;
+  if (STATIC_ONLY) {
+    const r = await (await import("./mock-api")).mockFile(url, { headers });
+    blob = r.blob;
+    name = r.name;
+  } else {
+    let res: Response;
+    try {
+      res = await fetch(url, { credentials: "same-origin", headers });
+    } catch {
+      throw new ApiError("서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.", 0);
+    }
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new ApiError(data?.error || `받지 못했어요 (${res.status})`, res.status);
+    }
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (m) {
+      try {
+        name = decodeURIComponent(m[1]);
+      } catch {}
+    }
+    blob = await res.blob();
+  }
+  // 잠긴 파일: 링크 열쇠로 풀어서 저장. 서버가 알려 준 이름은 자리 표시라 진짜 이름(fallback)으로
+  if (key) {
+    const { decryptStream } = await import("./e2e");
+    const parts: Blob[] = [];
+    await decryptStream(key, blob.stream(), (c) => {
+      parts.push(new Blob([c.slice()]));
+    });
+    blob = new Blob(parts);
+    name = fallback;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
 /** 수합 링크에 이 기기에서 낸 제출 (취소 · 확인용 토큰) */
