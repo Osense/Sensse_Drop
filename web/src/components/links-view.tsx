@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Check, ChevronLeft, Copy, Download, Eye, FolderOpen, HardDrive, Link2, Lock, Plus, QrCode, Trash2, TriangleAlert } from "lucide-react";
+import { Check, ChevronLeft, Copy, Download, Eye, FolderOpen, HardDrive, Inbox, Link2, Lock, Plus, QrCode, Trash2, TriangleAlert } from "lucide-react";
+import { CollectManager } from "@/components/collect-manager";
 import { Countdown } from "@/components/countdown";
 import { FileBadge } from "@/components/file-badge";
 import { ShareManager } from "@/components/share-manager";
@@ -106,12 +107,13 @@ export function LinksView() {
   }
 
   if (open) {
+    const Manager = (rows ?? []).some((r) => r.id === open && !isGone(r) && r.kind === "collect") ? CollectManager : ShareManager;
     return (
       <div className="mx-auto max-w-2xl px-4 py-8">
         <button onClick={() => { setOpen(null); load(); }} className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ChevronLeft className="size-4" /> 배포 기록
         </button>
-        <ShareManager
+        <Manager
           id={open}
           headers={headersFor(open)}
           onDeleted={() => { setOpen(null); load(); }}
@@ -236,9 +238,17 @@ export function LinksView() {
                   <div className="p-4 sm:p-5">
                     <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
                       <div className="min-w-0 flex-1 basis-60">
-                        <p className="truncate text-base font-bold tracking-tight">{r.title}</p>
+                        <p className="flex items-center gap-2 truncate text-base font-bold tracking-tight">
+                          {r.kind === "collect" && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand">
+                              <Inbox className="size-3" /> 수합
+                            </span>
+                          )}
+                          <span className="truncate">{r.title}</span>
+                        </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {formatDate(r.createdAt)} 만듦 · 열람 {r.opens}회 · 내려받기 {r.downloads}회
+                          {formatDate(r.createdAt)} 만듦 ·{" "}
+                          {r.kind === "collect" ? `낸 학생 ${r.submitters ?? 0}명 · 파일 ${r.files.length}개` : `열람 ${r.opens}회 · 내려받기 ${r.downloads}회`}
                           {r.state === "open" && r.bytes > 0 ? ` · ${formatSize(r.bytes)}` : ""}
                         </p>
                       </div>
@@ -254,7 +264,7 @@ export function LinksView() {
 
                     {r.message && <p className="mt-3 line-clamp-2 whitespace-pre-line rounded-lg bg-brand/5 px-3 py-2 text-sm text-foreground/80">{r.message}</p>}
 
-                    <ul className="mt-3 flex flex-wrap gap-1.5">
+                    <ul className={cn("mt-3 flex flex-wrap gap-1.5", r.kind === "collect" && "hidden")}>
                       {r.files.map((f) => (
                         <li key={f.id} className="flex max-w-full items-center gap-2 rounded-lg border bg-background px-2 py-1">
                           <FileBadge ext={f.ext} className="h-5 min-w-9 text-[9px]" />
@@ -279,7 +289,7 @@ export function LinksView() {
                     {r.state === "open" ? (
                       <>
                         <Button variant="outline" size="sm" onClick={() => setOpen(r.id)}>
-                          <QrCode /> 링크 · QR 보기
+                          {r.kind === "collect" ? <Inbox /> : <QrCode />} {r.kind === "collect" ? "제출 현황 · QR" : "링크 · QR 보기"}
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => copy(r)}>
                           {copied === r.id ? <Check /> : <Copy />} {copied === r.id ? "복사됨" : "링크 복사"}

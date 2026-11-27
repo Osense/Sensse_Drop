@@ -8,6 +8,9 @@ export interface Db {
   createShare(share: ShareRow, files: FileRow[]): Promise<void>;
   getShare(id: string): Promise<ShareWithFiles | null>;
   updateFile(shareId: string, fileId: string, patch: Partial<FileRow>): Promise<void>;
+  /** 수합 링크에 낸 파일 더하기 · 지우기 */
+  addFiles(files: FileRow[]): Promise<void>;
+  deleteFiles(shareId: string, fileIds: string[]): Promise<void>;
   updateShare(id: string, patch: Partial<ShareRow>): Promise<void>;
   deleteShare(id: string): Promise<void>;
   /** 회원의 링크 (닫힌 기록 포함, 최근 200개) */
@@ -45,6 +48,7 @@ class SupabaseDb implements Db {
 
   async createShare(share: ShareRow, files: FileRow[]) {
     await this.req("sd_shares", { method: "POST", body: JSON.stringify(share), headers: { Prefer: "return=minimal" } });
+    if (files.length === 0) return;
     try {
       await this.req("sd_files", { method: "POST", body: JSON.stringify(files), headers: { Prefer: "return=minimal" } });
     } catch (e) {
@@ -67,6 +71,17 @@ class SupabaseDb implements Db {
       body: JSON.stringify(patch),
       headers: { Prefer: "return=minimal" },
     });
+  }
+
+  async addFiles(files: FileRow[]) {
+    if (files.length === 0) return;
+    await this.req("sd_files", { method: "POST", body: JSON.stringify(files), headers: { Prefer: "return=minimal" } });
+  }
+
+  async deleteFiles(shareId: string, fileIds: string[]) {
+    if (fileIds.length === 0) return;
+    const list = fileIds.map((i) => encodeURIComponent(i)).join(",");
+    await this.req(`sd_files?share_id=eq.${encodeURIComponent(shareId)}&id=in.(${list})`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
   }
 
   async updateShare(id: string, patch: Partial<ShareRow>) {
@@ -157,6 +172,13 @@ class MemoryDb implements Db {
   async updateFile(shareId: string, fileId: string, patch: Partial<FileRow>) {
     const f = mem.get(shareId)?.files.find((x) => x.id === fileId);
     if (f) Object.assign(f, patch);
+  }
+  async addFiles(files: FileRow[]) {
+    for (const f of files) mem.get(f.share_id)?.files.push(structuredClone(f));
+  }
+  async deleteFiles(shareId: string, fileIds: string[]) {
+    const s = mem.get(shareId);
+    if (s) s.files = s.files.filter((f) => !fileIds.includes(f.id));
   }
   async updateShare(id: string, patch: Partial<ShareRow>) {
     const s = mem.get(id);

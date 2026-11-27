@@ -30,7 +30,21 @@ export function useRemaining(expiresAt?: string | null) {
 }
 
 /** 링크가 닫히기까지 남은 시간 (1초마다). 0이 되면 onExpire */
-export function Countdown({ expiresAt, onExpire, className, size = "md" }: { expiresAt: string; onExpire?: () => void; className?: string; size?: "md" | "lg" }) {
+export function Countdown({
+  expiresAt,
+  onExpire,
+  className,
+  size = "md",
+  label = "닫히기까지",
+  doneText = "링크가 닫혔어요",
+}: {
+  expiresAt: string;
+  onExpire?: () => void;
+  className?: string;
+  size?: "md" | "lg";
+  label?: string;
+  doneText?: string;
+}) {
   const left = useRemaining(expiresAt);
   const fired = React.useRef(false);
   React.useEffect(() => {
@@ -53,7 +67,7 @@ export function Countdown({ expiresAt, onExpire, className, size = "md" }: { exp
       aria-live="off"
     >
       <Timer className={size === "lg" ? "size-5" : "size-4"} />
-      {left === 0 ? "링크가 닫혔어요" : <>닫히기까지 {formatRemaining(left)}</>}
+      {left === 0 ? doneText : <>{label} {formatRemaining(left)}</>}
     </span>
   );
 }

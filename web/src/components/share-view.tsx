@@ -10,10 +10,12 @@ import { Input } from "@/components/ui/input";
 import { ShareMessage } from "@/components/share-message";
 import { Countdown } from "@/components/countdown";
 import { STATIC_ONLY } from "@/lib/config";
-import { api, type DownloadItem } from "@/lib/api";
+import { api, type CollectInfo, type DownloadItem } from "@/lib/api";
+import { SubmitView } from "@/components/submit-view";
 import { extOf, formatDate, formatSize } from "@/lib/format";
 
 type Info = { title: string; message?: string; expiresAt: string; fileCount: number; authed: boolean };
+const isCollect = (i: Info | CollectInfo): i is CollectInfo => (i as CollectInfo).kind === "collect";
 type State = "loading" | "login" | "list" | "gone";
 
 /** 받는 사람 화면: /<코드> (예: drop.wsns.studio/k3m9qr) */
@@ -21,6 +23,7 @@ export function ShareView() {
   const [id, setId] = React.useState("");
   const [state, setState] = React.useState<State>("loading");
   const [info, setInfo] = React.useState<Info | null>(null);
+  const [collect, setCollect] = React.useState<CollectInfo | null>(null);
   const [items, setItems] = React.useState<DownloadItem[]>([]);
   const [message, setMessage] = React.useState("");
   const [pw, setPw] = React.useState("");
@@ -58,8 +61,14 @@ export function ShareView() {
       setState("gone");
       return;
     }
-    api<Info>(`/api/s/${shareId}`)
+    api<Info | CollectInfo>(`/api/s/${shareId}`)
       .then((i) => {
+        // 수합 링크: 학생 제출 화면
+        if (isCollect(i)) {
+          document.title = `${i.title} · 과제 제출 · 쎈스드롭`;
+          setCollect(i);
+          return;
+        }
         setInfo(i);
         document.title = `${i.title} · 쎈스드롭`;
         if (i.authed) loadList(shareId);
@@ -86,6 +95,8 @@ export function ShareView() {
       setChecking(false);
     }
   }
+
+  if (collect) return <SubmitView id={id} info={collect} />;
 
   return (
     <div className="relative">

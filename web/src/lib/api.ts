@@ -29,6 +29,34 @@ export type ManagedFile = {
   status: FileStatus;
   error: string | null;
   pdfSize: number | null;
+  /** 수합 링크: 낸 사람 이름 */
+  submitter?: string | null;
+  createdAt?: string | null;
+};
+
+/** 수합(과제 걷기) 링크 설정 */
+export type CollectSettings = {
+  perPerson: number;
+  nameLabel: string;
+  roster: string[];
+  deadline: string | null;
+  closedAt: string | null;
+  hasPassword?: boolean;
+};
+
+/** 학생 화면에 보이는 수합 링크 정보 (/api/s/<코드>) */
+export type CollectInfo = {
+  kind: "collect";
+  title: string;
+  message: string;
+  expiresAt: string;
+  /** 제출을 받는 마지막 시각 */
+  deadline: string;
+  open: boolean;
+  needsPassword: boolean;
+  perPerson: number;
+  nameLabel: string;
+  maxFileMb: number | null;
 };
 
 export type ManagedShare = {
@@ -40,6 +68,9 @@ export type ManagedShare = {
   expiresAt: string;
   url: string;
   files: ManagedFile[];
+  kind?: "share" | "collect";
+  collect?: CollectSettings | null;
+  purged?: boolean;
 };
 
 export type DownloadItem = {
@@ -71,6 +102,9 @@ export type ShareSummary = {
   /** 지금 차지하는 저장 공간 */
   bytes: number;
   files: { id: string; name: string; ext: string; size: number; downloads: number }[];
+  kind?: "share" | "collect";
+  /** 수합 링크: 낸 사람 수 */
+  submitters?: number;
 };
 
 export class ApiError extends Error {
@@ -96,6 +130,45 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) throw new ApiError(data?.error || `요청에 실패했어요 (${res.status})`, res.status, (data ?? undefined) as Record<string, unknown> | undefined);
   return data as T;
 }
+
+/** 파일 받기 (관리자 헤더가 필요해 링크 대신 fetch 로) */
+export async function apiBlob(url: string, init?: RequestInit): Promise<Blob> {
+  if (STATIC_ONLY) return (await import("./mock-api")).mockBlob(url, init);
+  let res: Response;
+  try {
+    res = await fetch(url, { credentials: "same-origin", ...init });
+  } catch {
+    throw new ApiError("서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.", 0);
+  }
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new ApiError(data?.error || `받지 못했어요 (${res.status})`, res.status);
+  }
+  return res.blob();
+}
+
+/** 수합 링크에 이 기기에서 낸 제출 (취소 · 확인용 토큰) */
+export type LocalSubmission = { token: string; name: string; at: string };
+const SUB_KEY = (id: string) => `sensedrop.submit.${id}`;
+export const localSubmissions = {
+  all(id: string): LocalSubmission[] {
+    try {
+      return JSON.parse(localStorage.getItem(SUB_KEY(id)) || "[]") as LocalSubmission[];
+    } catch {
+      return [];
+    }
+  },
+  add(id: string, s: LocalSubmission) {
+    try {
+      localStorage.setItem(SUB_KEY(id), JSON.stringify([s, ...localSubmissions.all(id)].slice(0, 20)));
+    } catch {}
+  },
+  remove(id: string, token: string) {
+    try {
+      localStorage.setItem(SUB_KEY(id), JSON.stringify(localSubmissions.all(id).filter((x) => x.token !== token)));
+    } catch {}
+  },
+};
 
 /** 이 기기에서 만든 링크 (비회원 관리용 토큰 보관) */
 export type LocalLink = { id: string; adminToken: string; title: string; createdAt: string; expiresAt?: string };
