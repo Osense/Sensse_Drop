@@ -8,11 +8,11 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { STATIC_ONLY } from "@/lib/config";
+import { HOME_EVENT } from "@/lib/home";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/", label: "보내기" },
-  { href: "/collect/", label: "수합" },
+  { href: "/", label: "처음" },
   { href: "/links/", label: "배포 기록" },
   { href: "/plans/", label: "요금제" },
 ];
@@ -26,7 +26,7 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-5xl items-center gap-3 px-4">
-        <Link href="/" className="flex items-center gap-2.5">
+        <Link href="/" onClick={() => window.dispatchEvent(new Event(HOME_EVENT))} className="flex items-center gap-2.5">
           <AppIcon />
           <span className="leading-tight">
             <Wordmark className="block text-[17px]" />
@@ -40,6 +40,7 @@ export function SiteHeader() {
               <Link
                 key={n.href}
                 href={n.href}
+                onClick={() => n.href === "/" && window.dispatchEvent(new Event(HOME_EVENT))}
                 className={cn(
                   "rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground",
                   pathname === n.href && "bg-background text-foreground shadow-sm",
@@ -75,6 +76,7 @@ export function SiteHeader() {
             <Link
               key={n.href}
               href={n.href}
+              onClick={() => n.href === "/" && window.dispatchEvent(new Event(HOME_EVENT))}
               className={cn(
                 "flex-1 py-2.5 text-center text-sm font-medium text-muted-foreground",
                 pathname === n.href && "text-foreground shadow-[inset_0_-2px_0_var(--brand)]",
