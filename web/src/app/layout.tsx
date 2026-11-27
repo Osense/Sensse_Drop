@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { AppBackground } from "@/components/app-background";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { themeInitScript } from "@/components/theme-toggle";
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-dvh">
+        <AppBackground />
         <AuthProvider>
           <SiteHeader />
           <main id="main">{children}</main>

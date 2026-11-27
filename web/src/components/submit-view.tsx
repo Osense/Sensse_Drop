@@ -168,7 +168,6 @@ export function SubmitView({ id, info: first }: { id: string; info: CollectInfo 
           )}
         </div>
       </div>
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-72" />
       <div className="mx-auto max-w-lg px-4 py-8 sm:py-12">
         <div className="mb-5 animate-fade-up">
           <p className="text-sm font-semibold text-brand">과제 제출</p>
