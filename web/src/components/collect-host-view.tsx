@@ -6,9 +6,9 @@ import { CalendarClock, Eye, EyeOff, Inbox, Lock, Plus, Sparkles, Users } from "
 import { CollectManager } from "@/components/collect-manager";
 import { ExpirePicker, fromLocalInput, toLocalInput } from "@/components/expire-picker";
 import { LapseBanner } from "@/components/host-view";
+import { Wizard, type WizardStep } from "@/components/wizard";
 import { Wordmark } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,7 +30,7 @@ export function parseRoster(text: string) {
 type Created = { id: string; adminToken: string; password: string };
 
 /** 수합 링크 만들기: 교사가 링크(QR)를 주면 학생이 이름을 적고 파일을 내요 */
-export function CollectHostView() {
+export function CollectHostView({ onHome }: { onHome?: () => void } = {}) {
   const auth = useAuth();
   const { config, plan: limits, me, refresh: refreshPlan } = usePlan();
   const guest = limits.id === "guest";
@@ -52,6 +52,7 @@ export function CollectHostView() {
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [created, setCreated] = React.useState<Created | null>(null);
+  const [step, setStep] = React.useState(0);
   // 시각 글자는 화면이 뜬 뒤에만 (미리 만든 정적 화면과 어긋나지 않게)
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
@@ -104,6 +105,7 @@ export function CollectHostView() {
 
   function reset() {
     setCreated(null);
+    setStep(0);
     setTitle("");
     setMessage("");
     setPassword("");
@@ -127,24 +129,11 @@ export function CollectHostView() {
     );
   }
 
-  return (
-    <div className="relative">
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-80" />
-      <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-        <div className="mb-7 animate-fade-up">
-          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-            과제 걷기도 <span className="text-gradient">링크 하나로</span>
-          </h1>
-          <p className="mt-2 text-muted-foreground">
-            수합 링크(QR)를 띄우면 학생이 이름을 적고 파일을 내요. 낸 파일은 학생별로 모아 보고, ZIP 하나로 한꺼번에 받아요. 학생끼리는 서로의 파일을 볼 수 없어요.
-          </p>
-        </div>
-
-        {me?.lapse && <LapseBanner lapse={me.lapse} />}
-
-        <form onSubmit={(e) => submit(e)} className="space-y-4" autoComplete="off">
-          <Card className="space-y-4 p-5 sm:p-6">
-            <Step n={1} title="무엇을 걷나요" />
+  const steps: WizardStep[] = [
+    {
+      title: "무엇을 걷나요",
+      hint: "학생 화면 맨 위에 크게 보여요.",
+      content: <div className="space-y-4">
             <div className="space-y-1.5">
               <div className="flex items-baseline justify-between">
                 <Label htmlFor="title">제목</Label>
@@ -170,10 +159,12 @@ export function CollectHostView() {
                 placeholder={"예) 한글 또는 PDF로 내 주세요. 파일 이름에 번호를 붙이지 않아도 돼요.\n마감 뒤에 낸 과제는 받지 않아요."}
               />
             </div>
-          </Card>
-
-          <Card className="space-y-4 p-5 sm:p-6">
-            <Step n={2} title="학생이 적을 것 · 낼 것" />
+      </div>,
+    },
+    {
+      title: "학생이 낼 것",
+      hint: "학생이 적을 이름 칸과 낼 파일 수를 정해요.",
+      content: <div className="space-y-4">
             <div className="space-y-1.5">
               <Label>이름 칸 안내</Label>
               <div className="flex flex-wrap gap-1.5">
@@ -224,10 +215,20 @@ export function CollectHostView() {
               />
               <p className="text-xs text-muted-foreground">넣어 두면 아직 안 낸 학생을 바로 볼 수 있어요. 명단은 선생님 화면에만 보이고 학생에게는 보이지 않아요.</p>
             </div>
-          </Card>
-
-          <Card className="space-y-4 p-5 sm:p-6">
-            <Step n={3} title="언제까지 받고, 언제 지울까요" />
+      </div>,
+    },
+    {
+      title: "마감 · 삭제",
+      hint: "언제까지 받고, 모은 파일을 언제 지울지 정해요.",
+      check: () => {
+        if (expire === "custom" && !fromLocalInput(customAt)) return "파일이 지워질 시각을 정해 주세요.";
+        const d = useDeadline ? fromLocalInput(deadlineAt) : null;
+        if (useDeadline && !d) return "제출 마감 시각을 정해 주세요.";
+        if (d && d.getTime() <= Date.now()) return "제출 마감은 지금보다 뒤로 정해 주세요.";
+        if (d && expiresAt && d.getTime() > expiresAt.getTime()) return "제출 마감은 파일이 지워지는 시각보다 앞이어야 해요. 자동 삭제 시간을 늘려 주세요.";
+        return null;
+      },
+      content: <div className="space-y-4">
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
                 <CalendarClock className="size-4 text-brand" /> 제출 마감
@@ -296,10 +297,13 @@ export function CollectHostView() {
                 </Link>
               </div>
             )}
-          </Card>
-
-          <Card className="space-y-4 p-5 sm:p-6">
-            <Step n={4} title="제출 비밀번호" />
+      </div>,
+    },
+    {
+      title: "제출 비밀번호",
+      hint: "정하지 않아도 돼요. 정하면 비밀번호를 아는 학생만 낼 수 있어요.",
+      check: () => (password && password.length < 4 ? "제출 비밀번호는 4자 이상으로 정하거나 비워 두세요." : null),
+      content: <div className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="pw">
                 비밀번호 <span className="font-normal text-muted-foreground">(선택)</span>
@@ -326,17 +330,42 @@ export function CollectHostView() {
               </div>
               <p className="text-xs text-muted-foreground">우리 반 학생만 내게 하려면 비밀번호를 정해 칠판에 적어 주세요. 낸 파일은 비밀번호와 상관없이 선생님만 받을 수 있어요.</p>
             </div>
-            <Button type="submit" variant="brand" size="lg" className="w-full" disabled={busy}>
+      </div>,
+    },
+  ];
+
+  return (
+    <div className="relative">
+      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-80" />
+      <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
+        <div className="mb-6 animate-fade-up">
+          <p className="text-sm font-semibold text-brand">과제 수합하기</p>
+          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
+            과제 걷기도 <span className="text-gradient">링크 하나로</span>
+          </h1>
+        </div>
+
+        {me?.lapse && <LapseBanner lapse={me.lapse} />}
+
+        <Wizard
+          steps={steps}
+          step={step}
+          onStep={setStep}
+          busy={busy}
+          notice={notice}
+          onBack={onHome}
+          onFinish={() => submit(null)}
+          finishLabel={
+            <>
               <Inbox /> {busy ? "만드는 중…" : "수합 링크 만들기"}
-            </Button>
-            {notice && <p className="rounded-lg bg-destructive/10 px-3 py-2.5 text-sm text-destructive">{notice}</p>}
-          </Card>
-        </form>
+            </>
+          }
+        />
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
           <Wordmark /> · {limits.name} · 모은 파일은 선생님 저장 공간을 써요 ·{" "}
-          <Link href="/" className="underline-offset-2 hover:underline">
-            자료 나눠 주기
+          <Link href="/plans/" className="underline-offset-2 hover:underline">
+            요금제
           </Link>
         </p>
 
@@ -361,14 +390,5 @@ export function CollectHostView() {
         </Dialog>
       </div>
     </div>
-  );
-}
-
-function Step({ n, title }: { n: number; title: string }) {
-  return (
-    <h2 className="mb-1 flex items-center gap-2 font-semibold">
-      <span className="grid size-6 place-items-center rounded-full bg-brand/10 text-xs font-bold text-brand">{n}</span>
-      {title}
-    </h2>
   );
 }
